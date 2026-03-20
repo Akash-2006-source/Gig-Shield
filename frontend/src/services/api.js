@@ -1,7 +1,7 @@
 import axios from 'axios'
 
-// Base API configuration — must match PORT in your .env (5001)
-const API_BASE_URL = 'http://localhost:5001/api'
+// Base API configuration
+const API_BASE_URL = '/api'
 
 // Create axios instance with default config
 const api = axios.create({
