@@ -1,6 +1,7 @@
 const express = require('express')
 const cors = require('cors')
 const dotenv = require('dotenv')
+const path = require('path')
 const { connectDB } = require('./config/db')
 const { processAutomaticClaims } = require('./services/triggerService')
 
@@ -42,8 +43,10 @@ app.use('/api/payments', require('./routes/paymentRoutes'))
 app.use('/api/admin', require('./routes/adminRoutes'))
 app.use('/api/user', require('./routes/userRoutes'))
 
+// Health check for Render
+app.get('/api/health', (req, res) => res.json({ status: 'ok' }))
+
 // FIX: global error handler — catches anything thrown in controllers
-// This removes the need for duplicate try/catch in every controller
 app.use((err, req, res, next) => {
   const status = err.statusCode || 500
   const message = err.message || 'Internal server error'
@@ -52,6 +55,15 @@ app.use((err, req, res, next) => {
   }
   res.status(status).json({ message })
 })
+
+// Serve frontend in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../frontend/dist')))
+  // SPA fallback — exclude /api routes
+  app.get(/^(?!\/api).*/, (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'))
+  })
+}
 
 const PORT = process.env.PORT || 5000
 
