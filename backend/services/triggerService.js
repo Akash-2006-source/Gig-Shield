@@ -1,92 +1,204 @@
-// Automated claim triggering based on weather conditions
-const Policy = require('../models/Policy')
-const Claim = require('../models/Claim')
-const { getWeatherData } = require('./weatherService')
+/**
+ * triggerService.js
+ * -----------------
+ * Parametric trigger engine. Runs hourly to check live weather/AQI data
+ * against defined thresholds. Fires automatic claims for matched policies.
+ *
+ * Trigger thresholds (food delivery outdoor workers, Zomato/Swiggy persona):
+ *  - Heavy rain:     >= 50mm accumulated in 3 hours (IMD standard)
+ *  - Moderate rain:  >= 30mm in 3 hours  
+ *  - Extreme heat:   >= 42°C sustained (outdoor work becomes unsafe)
+ *  - Severe AQI:     >= 200 (CPCB "Severe" band — respiratory risk)
+ *  - Cyclone alert:  weather ID 900-902 (OpenWeather tropical storm codes)
+ */
+
+const Policy  = require('../models/Policy')
+const Claim   = require('../models/Claim')
+const User    = require('../models/User')
 const RiskZone = require('../models/RiskZone')
+const { getWeatherData } = require('./weatherService')
+const { getAQIData }     = require('./aqiService')
+const { calculatePayout, PLAN_COVERAGE, PLAN_TRIGGERS } = require('../utils/premiumCalculator')
 const { evaluateDisruptionSignals } = require('./disruptionSignals')
 const { Op } = require('sequelize')
 
-const getPayoutAmount = (coverage, signal) => {
-  const normalizedCoverage = Number(coverage || 0)
-  const payout = normalizedCoverage * (signal.payoutPercentile / 100)
-  return Math.round(payout * 100) / 100
+// ── Trigger thresholds ────────────────────────────────────────────────────────
+const THRESHOLDS = {
+  rain: {
+    moderate: 30,   // mm / 3hr — Tier 1 payout
+    heavy:    50,   // mm / 3hr — Tier 2 payout (primary trigger)
+  },
+  heat: {
+    extreme:  42    // °C sustained
+  },
+  aqi: {
+    severe:   200   // CPCB AQI "Severe" band
+  }
 }
 
-const checkWeatherTriggers = async (policy, weatherData, riskZone) => {
-  const triggeredClaims = []
-  const signals = evaluateDisruptionSignals({
-    location: policy.location || policy.user?.location,
-    riskZone,
-    weatherData
+// ── Hours lost estimation by event type and severity ─────────────────────────
+const HOURS_LOST = {
+  rain_moderate: 3,
+  rain_heavy:    6,
+  heat_extreme:  5,
+  aqi_severe:    4,
+  cyclone:       10,  // full day + morning
+}
+
+/**
+ * Checks if a duplicate auto-claim was already filed for the same event
+ * in the last 24 hours (prevents double-paying the same storm).
+ */
+const isDuplicateClaim = async (userId, triggerType) => {
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
+  const existing = await Claim.findOne({
+    where: {
+      userId,
+      triggerType,
+      submittedAt: { [Op.gte]: cutoff }
+    }
   })
+  return !!existing
+}
 
-  for (const signal of signals) {
-    const existingClaim = await Claim.findOne({
-      where: {
-        userId: policy.userId,
-        policyId: policy.id,
-        triggerType: signal.type,
-        submittedAt: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) }
-      }
-    })
+/**
+ * Determine which parametric triggers fired for a given weather snapshot.
+ * Returns array of { triggerType, triggerValue, hoursLost }
+ */
+const detectTriggers = (weatherData, aqiValue, planType) => {
+  const triggers = []
+  const allowedTriggers = PLAN_TRIGGERS[planType] || PLAN_TRIGGERS.Standard
 
-    if (!existingClaim) {
-      triggeredClaims.push({
-        policyId: policy.id,
-        userId: policy.userId,
-        amount: getPayoutAmount(policy.coverage, signal),
-        reason: signal.description,
-        status: signal.autoApprove ? 'approved' : 'flagged',
-        triggerType: signal.type,
-        notes: signal.autoApprove
-          ? `Zero-touch payout processed via ${signal.source} at ${signal.payoutPercentile}th percentile`
-          : `Soft review queued from ${signal.source} at ${signal.payoutPercentile}th percentile`
+  if (!weatherData) return triggers
+
+  const tempC     = weatherData.main?.temp ?? 0
+  const rain1h    = weatherData.rain?.['1h'] ?? 0
+  const rain3h    = weatherData.rain?.['3h'] ?? (rain1h * 3)  // estimate 3hr from 1hr if needed
+  const weatherId = weatherData.weather?.[0]?.id ?? 0
+
+  // ── Rain triggers ──────────────────────────────────────────────────────────
+  if (allowedTriggers.includes('rain')) {
+    if (rain3h >= THRESHOLDS.rain.heavy) {
+      triggers.push({
+        triggerType:  'rain_heavy',
+        triggerValue: `${rain3h.toFixed(1)}mm/3hr`,
+        hoursLost:    HOURS_LOST.rain_heavy
+      })
+    } else if (rain3h >= THRESHOLDS.rain.moderate) {
+      triggers.push({
+        triggerType:  'rain_moderate',
+        triggerValue: `${rain3h.toFixed(1)}mm/3hr`,
+        hoursLost:    HOURS_LOST.rain_moderate
       })
     }
   }
 
-  return triggeredClaims
+  // ── Heat trigger ──────────────────────────────────────────────────────────
+  if (allowedTriggers.includes('heat') && tempC >= THRESHOLDS.heat.extreme) {
+    triggers.push({
+      triggerType:  'heat_extreme',
+      triggerValue: `${tempC.toFixed(1)}°C`,
+      hoursLost:    HOURS_LOST.heat_extreme
+    })
+  }
+
+  // ── Cyclone / tropical storm trigger (OpenWeather IDs 900-902, 781) ───────
+  if (allowedTriggers.includes('cyclone') &&
+      ((weatherId >= 900 && weatherId <= 902) || weatherId === 781)) {
+    triggers.push({
+      triggerType:  'cyclone',
+      triggerValue: `WeatherID ${weatherId}`,
+      hoursLost:    HOURS_LOST.cyclone
+    })
+  }
+
+  // ── AQI trigger ───────────────────────────────────────────────────────────
+  if (allowedTriggers.includes('aqi') &&
+      aqiValue !== null && aqiValue >= THRESHOLDS.aqi.severe) {
+    triggers.push({
+      triggerType:  'aqi_severe',
+      triggerValue: `AQI ${aqiValue}`,
+      hoursLost:    HOURS_LOST.aqi_severe
+    })
+  }
+
+  return triggers
 }
 
+/**
+ * Main hourly job. Processes all active policies and fires parametric claims.
+ */
 const processAutomaticClaims = async () => {
+  console.log('[triggerService] Running parametric claim check...')
   try {
-    // Get all active policies with user data
     const policies = await Policy.findAll({
       where: { status: 'active' },
-      include: [{ model: require('../models/User'), as: 'user' }]
+      include: [{ model: User, as: 'user' }]
     })
 
+    let claimsCreated = 0
+
     for (const policy of policies) {
-      const location = policy.location || policy.user?.location
-      if (location) {
-        const [weatherData, riskZone] = await Promise.all([
-          getWeatherData(location),
-          RiskZone.findOne({ where: { location } })
-        ])
+      const user = policy.user
+      if (!user?.location) continue
 
-        if (weatherData) {
-          const triggeredClaims = await checkWeatherTriggers(policy, weatherData, riskZone)
+      // Fetch weather + AQI data (both cached internally)
+      const weatherData = await getWeatherData(user.location)
+      const aqiValue    = await getAQIData(user.location)
 
-          for (const triggeredClaim of triggeredClaims) {
-            await Claim.create({
-              userId: triggeredClaim.userId,
-              policyId: triggeredClaim.policyId,
-              amount: triggeredClaim.amount,
-              description: triggeredClaim.reason,
-              status: triggeredClaim.status,
-              source: 'automated',
-              triggerType: triggeredClaim.triggerType,
-              notes: triggeredClaim.notes
-            })
+      if (!weatherData) continue
 
-            console.log(`Automatic claim created for user ${triggeredClaim.userId}: ${triggeredClaim.triggerType}`)
-          }
+      // Detect which triggers fired (parametric thresholds)
+      const firedTriggers = detectTriggers(weatherData, aqiValue, policy.type)
+
+      // Supplement with disruptionSignals — catches thunderstorm, flood-risk, civic events
+      const riskZone = await RiskZone.findOne({ where: { location: { [Op.like]: '%' + user.location.split(',')[0].trim() + '%' } } })
+      const extraSignals = evaluateDisruptionSignals({ location: user.location, riskZone, weatherData })
+      for (const sig of extraSignals) {
+        if (sig.autoApprove && !firedTriggers.find(t => t.triggerType === sig.type)) {
+          firedTriggers.push({
+            triggerType:  sig.type,
+            triggerValue: sig.title,
+            hoursLost:    Math.round(sig.payoutPercentile / 10)
+          })
         }
       }
+
+      for (const trigger of firedTriggers) {
+        // Skip if already paid for same event in last 24h
+        if (await isDuplicateClaim(user.id, trigger.triggerType)) continue
+
+        // FIX: compute payout from worker's actual earnings profile
+        const avgDailyEarnings = parseFloat(user.avgDailyEarnings) || 700
+        const workHoursPerDay  = parseFloat(user.workHoursPerDay)  || 6
+        const coverageCap      = parseFloat(policy.coverage)
+
+        const payoutAmount = calculatePayout({
+          avgDailyEarnings,
+          workHoursPerDay,
+          hoursLost:   trigger.hoursLost,
+          coverageCap
+        })
+
+        await Claim.create({
+          userId:       user.id,
+          policyId:     policy.id,
+          amount:       payoutAmount,
+          description:  `Auto-claim: ${trigger.triggerType} — ${trigger.triggerValue}. Estimated ${trigger.hoursLost} hours of income lost.`,
+          triggerType:  trigger.triggerType,
+          triggerValue: trigger.triggerValue,
+          status:       'approved'
+        })
+
+        console.log(`[triggerService] Auto-claim created: user=${user.id} trigger=${trigger.triggerType} payout=₹${payoutAmount}`)
+        claimsCreated++
+      }
     }
+
+    console.log(`[triggerService] Done. ${claimsCreated} auto-claims created.`)
   } catch (error) {
-    console.error('Error processing automatic claims:', error)
+    console.error('[triggerService] Error processing automatic claims:', error)
   }
 }
 
-module.exports = { checkWeatherTriggers, processAutomaticClaims }
+module.exports = { processAutomaticClaims, detectTriggers, THRESHOLDS }

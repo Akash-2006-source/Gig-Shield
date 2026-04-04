@@ -1,37 +1,66 @@
 import React, { useState, useEffect } from 'react'
 import Navbar from '../components/Navbar'
-import { getPolicies, createPolicy, updatePolicyStatus, getPolicyQuote } from '../services/policyService'
-import { payPolicyPremium } from '../services/paymentService'
+import PaymentModal from '../components/PaymentModal'
+import { getPolicies, createPolicy, updatePolicyStatus } from '../services/policyService'
 import '../styles/dashboard.css'
 
-const POLICY_TYPES = ['Basic', 'Standard', 'Premium']
-const OCCUPATIONS = ['Zomato', 'Swiggy', 'Zepto', 'Amazon', 'Flipkart', 'Other']
-
-const statusColor = (status) => {
-  switch (status?.toLowerCase()) {
-    case 'active': return '#27ae60'
-    case 'paused': return '#f39c12'
-    case 'cancelled': return '#e74c3c'
-    case 'expired': return '#95a5a6'
-    default: return '#95a5a6'
+const PLANS = [
+  {
+    value:       'Basic',
+    label:       'Shield Basic',
+    rate:        '2.0%',
+    description: 'Essential cover for weather disruptions',
+    triggers:    ['Heavy rain (≥50mm/3hr)', 'Severe AQI (≥200)'],
+    cap:         '₹2,500',
+    color:       '#888'
+  },
+  {
+    value:       'Standard',
+    label:       'Shield Standard',
+    rate:        '3.5%',
+    description: 'Full weather + cyclone protection',
+    triggers:    ['Heavy rain', 'Severe AQI', 'Extreme heat (≥42°C)', 'Cyclone / red alert'],
+    cap:         '₹3,500',
+    color:       '#378ADD',
+    recommended: true
+  },
+  {
+    value:       'Pro',
+    label:       'Shield Pro',
+    rate:        '5.0%',
+    description: 'All triggers including civil disruptions',
+    triggers:    ['Heavy rain', 'Severe AQI', 'Extreme heat', 'Cyclone', 'Curfew / hartal / strike'],
+    cap:         '₹5,000',
+    color:       '#534AB7'
   }
-}
+]
 
-const formatCurrency = (value) => `Rs${Number(value || 0).toFixed(2)}`
+const OCCUPATIONS = ['Zomato', 'Swiggy', 'Zepto', 'Blinkit', 'Amazon', 'Flipkart', 'Other']
+
+const statusColor = (s) => ({
+  active: '#27ae60', paused: '#f39c12', cancelled: '#e74c3c', expired: '#95a5a6'
+}[s?.toLowerCase()] || '#95a5a6')
 
 const PolicyPage = () => {
-  const [policies, setPolicies] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-  const [showForm, setShowForm] = useState(false)
+  const [policies,      setPolicies]      = useState([])
+  const [loading,       setLoading]       = useState(true)
+  const [error,         setError]         = useState('')
+  const [success,       setSuccess]       = useState('')
+  const [showForm,      setShowForm]      = useState(false)
   const [actionLoading, setActionLoading] = useState(null)
-  const [formData, setFormData] = useState({ type: '', coverage: '', occupation: '', location: '' })
-  const [formLoading, setFormLoading] = useState(false)
-  const [formError, setFormError] = useState('')
-  const [quote, setQuote] = useState(null)
-  const [quoteLoading, setQuoteLoading] = useState(false)
-  const [paymentLoading, setPaymentLoading] = useState(null)
+  const [formData,      setFormData]      = useState({ type: '', occupation: '', location: '' })
+  const [formLoading,   setFormLoading]   = useState(false)
+  const [formError,     setFormError]     = useState('')
+  const [preview,       setPreview]       = useState(null)
+  const [previewLoading,setPreviewLoading]= useState(false)
+  const [payingPolicy,  setPayingPolicy]   = useState(null)   // policy to pay for
+
+  // Get worker's daily earnings from localStorage (set at login/register)
+  const currentUser = (() => {
+    try { return JSON.parse(localStorage.getItem('user') || '{}') } catch { return {} }
+  })()
+  const dailyEarnings = currentUser.avgDailyEarnings || 700
+  const weeklyEarnings = dailyEarnings * 7
 
   const fetchPolicies = async () => {
     try {
@@ -39,66 +68,45 @@ const PolicyPage = () => {
       const data = await getPolicies()
       setPolicies(data)
       if (data.length === 0) setShowForm(true)
-    } catch (err) {
-      setError('Failed to load policies')
-    } finally {
-      setLoading(false)
-    }
+    } catch { setError('Failed to load policies') }
+    finally  { setLoading(false) }
   }
 
   useEffect(() => { fetchPolicies() }, [])
 
+  // Fetch live preview whenever type or location changes
   useEffect(() => {
-    const { coverage, occupation, location } = formData
-    if (!coverage || !occupation || !location || Number(coverage) <= 0) {
-      setQuote(null)
-      return undefined
-    }
+    if (!formData.type || !formData.location) { setPreview(null); return }
+    let cancelled = false
+    setPreviewLoading(true)
+    createPolicy({ type: formData.type, location: formData.location, coverage: 0, previewOnly: true })
+      .then(res => { if (!cancelled) setPreview(res) })
+      .catch(() => { if (!cancelled) setPreview(null) })
+      .finally(() => { if (!cancelled) setPreviewLoading(false) })
+    return () => { cancelled = true }
+  }, [formData.type, formData.location])
 
-    const timer = setTimeout(async () => {
-      try {
-        setQuoteLoading(true)
-        const nextQuote = await getPolicyQuote({
-          coverage: Number(coverage),
-          occupation,
-          location
-        })
-        setQuote(nextQuote)
-      } catch {
-        setQuote(null)
-      } finally {
-        setQuoteLoading(false)
-      }
-    }, 350)
-
-    return () => clearTimeout(timer)
-  }, [formData.coverage, formData.occupation, formData.location])
-
-  const handleFormChange = (event) => {
-    setFormData({ ...formData, [event.target.name]: event.target.value })
+  const handleFormChange = (e) => {
+    setFormData(p => ({ ...p, [e.target.name]: e.target.value }))
     setFormError('')
   }
 
-  const handleCreatePolicy = async (event) => {
-    event.preventDefault()
-    const { type, coverage, occupation, location } = formData
-    if (!type || !coverage || !occupation || !location) {
-      setFormError('Please fill in all fields')
-      return
-    }
-    if (isNaN(coverage) || Number(coverage) <= 0) {
-      setFormError('Coverage must be a positive number')
-      return
-    }
+  const handleCreatePolicy = async (e) => {
+    e.preventDefault()
+    const { type, location } = formData
+    if (!type || !location) { setFormError('Please select a plan and enter your city'); return }
     try {
       setFormLoading(true)
-      await createPolicy({ type, coverage: Number(coverage), occupation, location })
-      setSuccess('Policy created successfully!')
+      const result  = await createPolicy({ type, location, coverage: 0 })
+      const plan    = PLANS.find(p => p.value === type)
+      const pct     = result.contributionPct || plan?.rate || ''
+      const premium = result.premium
+      setSuccess(`${plan?.label} created! You contribute ${pct} of weekly earnings = ₹${premium}/week.`)
       setShowForm(false)
-      setFormData({ type: '', coverage: '', occupation: '', location: '' })
-      setQuote(null)
+      setPreview(null)
+      setFormData({ type: '', occupation: '', location: '' })
       await fetchPolicies()
-      setTimeout(() => setSuccess(''), 3000)
+      setTimeout(() => setSuccess(''), 7000)
     } catch (err) {
       setFormError(err.response?.data?.message || 'Failed to create policy')
     } finally {
@@ -107,12 +115,12 @@ const PolicyPage = () => {
   }
 
   const handleStatusChange = async (policyId, newStatus) => {
-    const confirmMsg = {
-      cancelled: 'Are you sure you want to cancel this policy? This cannot be undone.',
-      paused: 'Pause this policy? You will not be covered until reactivated.',
-      active: 'Reactivate this policy?'
+    const msgs = {
+      cancelled: 'Cancel this policy? You will lose coverage immediately.',
+      paused:    'Pause this policy? You will not be covered until reactivated.',
+      active:    'Reactivate this policy?'
     }
-    if (!window.confirm(confirmMsg[newStatus])) return
+    if (!window.confirm(msgs[newStatus])) return
     try {
       setActionLoading(policyId)
       await updatePolicyStatus(policyId, newStatus)
@@ -127,132 +135,128 @@ const PolicyPage = () => {
     }
   }
 
-  const handlePayment = async (policyId) => {
-    try {
-      setPaymentLoading(policyId)
-      const result = await payPolicyPremium(policyId)
-      if (result.mode === 'stripe') {
-        setSuccess('Payment intent created. Connect Stripe Elements to complete live card checkout.')
-      } else {
-        setSuccess(result.message || 'Payment completed successfully!')
-      }
-      await fetchPolicies()
-      setTimeout(() => setSuccess(''), 4000)
-    } catch (err) {
-      setError(err.response?.data?.message || 'Failed to process premium payment')
-      setTimeout(() => setError(''), 4000)
-    } finally {
-      setPaymentLoading(null)
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="dashboard-container">
-        <Navbar />
-        <div className="dashboard-content">
-          <div className="loading">Loading policies...</div>
-        </div>
-      </div>
-    )
-  }
+  if (loading) return (
+    <div className="dashboard-container"><Navbar />
+      <div className="dashboard-content"><div className="loading">Loading policies...</div></div>
+    </div>
+  )
 
   return (
     <div className="dashboard-container">
       <Navbar />
       <div className="dashboard-content">
-        <div className="header-row">
-          <h2 className="page-title policy-page-title">My Policies</h2>
+
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.5rem' }}>
+          <h2 className="page-title" style={{ margin: 0 }}>My Policies</h2>
           {!showForm && (
-            <button className="submit-btn compact-button" onClick={() => setShowForm(true)}>
+            <button className="submit-btn" style={{ width:'auto', padding:'0.5rem 1.5rem' }}
+              onClick={() => setShowForm(true)}>
               + New Policy
             </button>
           )}
         </div>
 
-        {error && <div className="error-message">{error}</div>}
-        {success && <div className="success-message">{success}</div>}
+        {error   && <div className="error-message"   style={{ marginBottom:'1rem' }}>{error}</div>}
+        {success && <div className="success-message" style={{ marginBottom:'1rem' }}>{success}</div>}
 
+        {/* ── Create policy form ── */}
         {showForm && (
           <section className="dashboard-section">
             <div className="policy-card">
-              <h3>Create New Policy</h3>
-              {formError && <div className="error-message">{formError}</div>}
+              <h3>Choose Your Plan</h3>
+
+              {/* How contribution pricing works */}
+              <div style={{ background:'var(--color-background-info)', borderRadius:8, padding:'10px 14px', marginBottom:'1.25rem', fontSize:13, color:'var(--color-text-info)' }}>
+                Your weekly premium is a fixed <strong>% of your weekly earnings</strong> — just like a small payroll deduction.
+                At ₹{dailyEarnings}/day your weekly earnings are <strong>₹{weeklyEarnings.toLocaleString('en-IN')}</strong>.
+              </div>
+
+              {/* Plan comparison cards */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
+                {PLANS.map(plan => {
+                  const weeklyPrem = Math.round((weeklyEarnings * parseFloat(plan.rate) / 100) / 5) * 5
+                  const selected   = formData.type === plan.value
+                  return (
+                    <div key={plan.value}
+                      onClick={() => { setFormData(p => ({ ...p, type: plan.value })); setFormError('') }}
+                      style={{
+                        border: selected ? `2px solid ${plan.color}` : '0.5px solid var(--color-border-secondary)',
+                        borderRadius: 10, padding: '12px 14px', cursor: 'pointer',
+                        background: selected ? 'var(--color-background-primary)' : 'var(--color-background-secondary)',
+                        position: 'relative', transition: 'border .15s'
+                      }}>
+                      {plan.recommended && (
+                        <div style={{ position:'absolute', top:-10, left:'50%', transform:'translateX(-50%)', background:'#E6F1FB', color:'#0C447C', fontSize:10, fontWeight:500, padding:'2px 10px', borderRadius:12, whiteSpace:'nowrap' }}>
+                          Recommended
+                        </div>
+                      )}
+                      <div style={{ fontWeight:500, fontSize:14, color: plan.color, marginBottom:2 }}>{plan.label}</div>
+                      <div style={{ fontSize:22, fontWeight:500, color:'var(--color-text-primary)', margin:'4px 0' }}>{plan.rate}<span style={{ fontSize:12, color:'var(--color-text-secondary)', marginLeft:2 }}>of earnings</span></div>
+                      <div style={{ fontSize:13, fontWeight:500, color:'var(--color-text-primary)', marginBottom:4 }}>≈ ₹{weeklyPrem}/week</div>
+                      <div style={{ fontSize:11, color:'var(--color-text-secondary)', marginBottom:6 }}>
+                Up to ₹{(Math.round(weeklyEarnings * ({'2.0%':2,'3.5%':3.5,'5.0%':5}[plan.rate]||3.5) / 50) * 50).toLocaleString('en-IN')}/week
+              </div>
+                      {plan.triggers.map(t => (
+                        <div key={t} style={{ fontSize:11, color:'var(--color-text-secondary)', marginBottom:1 }}>✓ {t}</div>
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {formError && <div className="error-message" style={{ marginBottom:'1rem' }}>{formError}</div>}
+
               <form onSubmit={handleCreatePolicy} className="auth-form">
                 <div className="info-grid">
                   <div className="form-group">
-                    <label>Policy Type</label>
-                    <select name="type" value={formData.type} onChange={handleFormChange} required>
-                      <option value="">Select type</option>
-                      {POLICY_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label>Coverage Amount (Rs)</label>
-                    <input type="number" name="coverage" value={formData.coverage} onChange={handleFormChange} placeholder="e.g. 5000" required />
-                  </div>
-                  <div className="form-group">
-                    <label>Occupation / Platform</label>
+                    <label>Delivery Platform</label>
                     <select name="occupation" value={formData.occupation} onChange={handleFormChange} required>
                       <option value="">Select platform</option>
-                      {OCCUPATIONS.map((occupation) => <option key={occupation} value={occupation}>{occupation}</option>)}
+                      {OCCUPATIONS.map(o => <option key={o} value={o}>{o}</option>)}
                     </select>
                   </div>
                   <div className="form-group">
-                    <label>Work Location / City</label>
-                    <input type="text" name="location" value={formData.location} onChange={handleFormChange} placeholder="e.g. Mumbai" required />
+                    <label>Work City</label>
+                    <input type="text" name="location" value={formData.location}
+                      onChange={handleFormChange} placeholder="e.g. Chennai, Mumbai, Delhi" required />
                   </div>
                 </div>
 
-                <div className="quote-panel">
-                  <div className="quote-header">
-                    <div>
-                      <h4>Dynamic premium preview</h4>
-                      <p>Live quote updates from zone history, weather intensity, platform exposure, and selected coverage.</p>
-                    </div>
-                    {quoteLoading && <span className="quote-tag">Refreshing...</span>}
-                  </div>
-
-                  {quote ? (
-                    <div className="quote-grid">
-                      <div className="quote-metric">
-                        <span className="quote-label">Weekly premium</span>
-                        <strong>{formatCurrency(quote.premium)}</strong>
-                      </div>
-                      <div className="quote-metric">
-                        <span className="quote-label">Risk level</span>
-                        <strong>{quote.riskLevel}</strong>
-                      </div>
-                      <div className="quote-metric">
-                        <span className="quote-label">Coverage window</span>
-                        <strong>{quote.recommendedCoverageHours} hrs / week</strong>
-                      </div>
-                      <div className="quote-metric">
-                        <span className="quote-label">Quote summary</span>
-                        <strong>{quote.quoteSummary.headline}</strong>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="muted-copy">Fill in coverage, platform, and city to preview the live premium.</p>
-                  )}
-
-                  {quote?.eligibleTriggers?.length > 0 && (
-                    <div className="trigger-chip-row">
-                      {quote.eligibleTriggers.map((trigger) => (
-                        <span key={trigger.type} className="trigger-chip">
-                          {trigger.label} {trigger.autoPayout ? 'auto' : 'review'}
-                        </span>
+                {/* Live premium preview */}
+                {previewLoading && (
+                  <div style={{ fontSize:13, color:'var(--color-text-secondary)', margin:'0.5rem 0' }}>Calculating your premium...</div>
+                )}
+                {preview && !previewLoading && (
+                  <div style={{ background:'var(--color-background-secondary)', borderRadius:8, padding:'12px 16px', margin:'0.75rem 0', fontSize:13 }}>
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8 }}>
+                      {[
+                        ['Your contribution', `${preview.contributionPct} of earnings`],
+                        ['Weekly premium',    `₹${preview.premium}`],
+                        ['Coverage cap',      `₹${(preview.coverage||0).toLocaleString('en-IN')}/week (${preview.coverageMultiplier || ''})`],
+                        ['City risk band',    preview.cityRisk || '—'],
+                      ].map(([lbl, val]) => (
+                        <div key={lbl}>
+                          <div style={{ color:'var(--color-text-secondary)', fontSize:11, marginBottom:2 }}>{lbl}</div>
+                          <div style={{ fontWeight:500, color:'var(--color-text-primary)', textTransform:'capitalize' }}>{val}</div>
+                        </div>
                       ))}
                     </div>
-                  )}
-                </div>
+                    {preview.premiumBreakdown?.affordabilityGap > 0 && (
+                      <div style={{ marginTop:8, paddingTop:8, borderTop:'0.5px solid var(--color-border-tertiary)', fontSize:11, color:'var(--color-text-tertiary)' }}>
+                        Actuarially fair price: ₹{preview.premiumBreakdown.actuarialFairPremium}/week —
+                        affordability gap of ₹{preview.premiumBreakdown.affordabilityGap} covered by platform solidarity pool.
+                      </div>
+                    )}
+                  </div>
+                )}
 
-                <div className="button-row">
-                  <button type="submit" className="submit-btn" disabled={formLoading}>
-                    {formLoading ? 'Creating...' : 'Create Policy'}
+                <div style={{ display:'flex', gap:'1rem', marginTop:'1rem' }}>
+                  <button type="submit" className="submit-btn" style={{ width:'auto', flex:1 }} disabled={formLoading || !formData.type}>
+                    {formLoading ? 'Creating...' : `Activate ${PLANS.find(p=>p.value===formData.type)?.label || 'Plan'}`}
                   </button>
                   {policies.length > 0 && (
-                    <button type="button" className="action-btn cancel" onClick={() => { setShowForm(false); setFormError(''); setQuote(null) }}>
+                    <button type="button" className="action-btn cancel" style={{ flex:1 }}
+                      onClick={() => { setShowForm(false); setFormError(''); setPreview(null) }}>
                       Cancel
                     </button>
                   )}
@@ -262,115 +266,112 @@ const PolicyPage = () => {
           </section>
         )}
 
+        {/* ── Existing policies ── */}
         {policies.length === 0 && !showForm ? (
-          <div className="info-card centered-card">
-            <p>You do not have any policies yet.</p>
-            <button className="submit-btn compact-button top-space" onClick={() => setShowForm(true)}>
+          <div className="info-card" style={{ textAlign:'center', padding:'2rem' }}>
+            <p>You don't have any policies yet.</p>
+            <button className="submit-btn" style={{ width:'auto', marginTop:'1rem' }}
+              onClick={() => setShowForm(true)}>
               Create Your First Policy
             </button>
           </div>
         ) : (
-          policies.map((policy) => (
-            <section key={policy.id} className="dashboard-section">
-              <div className="policy-card">
-                <div className="header-row">
-                  <h3>{policy.type} Policy</h3>
-                  <span style={{
-                    background: statusColor(policy.status),
-                    color: 'white',
-                    padding: '4px 14px',
-                    borderRadius: '99px',
-                    fontSize: '13px',
-                    fontWeight: '600'
-                  }}>
-                    {policy.status?.toUpperCase()}
-                  </span>
-                </div>
-
-                <div className="policy-details">
-                  <div className="policy-row">
-                    <span className="policy-label">Weekly Premium:</span>
-                    <span className="policy-value">{formatCurrency(policy.premium)}</span>
+          policies.map(policy => {
+            const plan = PLANS.find(p => p.value === policy.type)
+            return (
+              <section key={policy.id} className="dashboard-section">
+                <div className="policy-card">
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem' }}>
+                    <h3>{policy.type} Policy</h3>
+                    <span style={{ background:statusColor(policy.status), color:'white', padding:'4px 14px', borderRadius:99, fontSize:13, fontWeight:500 }}>
+                      {policy.status?.toUpperCase()}
+                    </span>
                   </div>
-                  <div className="policy-row">
-                    <span className="policy-label">Coverage Amount:</span>
-                    <span className="policy-value">{formatCurrency(policy.coverage)}</span>
-                  </div>
-                  <div className="policy-row">
-                    <span className="policy-label">Risk Level:</span>
-                    <span className="policy-value">{policy.riskLevel || 'medium'}</span>
-                  </div>
-                  <div className="policy-row">
-                    <span className="policy-label">Recommended Coverage Window:</span>
-                    <span className="policy-value">{policy.recommendedCoverageHours || 24} hours</span>
-                  </div>
-                  <div className="policy-row">
-                    <span className="policy-label">Start Date:</span>
-                    <span className="policy-value">{new Date(policy.startDate || policy.createdAt).toDateString()}</span>
-                  </div>
-                  <div className="policy-row">
-                    <span className="policy-label">End Date:</span>
-                    <span className="policy-value">{new Date(policy.endDate).toDateString()}</span>
-                  </div>
-                  <div className="policy-row">
-                    <span className="policy-label">Payment Status:</span>
-                    <span className="policy-value">{policy.paymentStatus || 'pending'}</span>
-                  </div>
-                </div>
-
-                {policy.eligibleTriggers?.length > 0 && (
-                  <div className="trigger-chip-row top-space">
-                    {policy.eligibleTriggers.map((trigger) => (
-                      <span className="trigger-chip" key={`${policy.id}-${trigger.type}`}>
-                        {trigger.label}
-                      </span>
+                  <div className="policy-details">
+                    {[
+                      ['Weekly Contribution', `₹${Number(policy.premium).toFixed(0)} (${plan?.rate || '—'} of your earnings)`],
+                      ['Coverage Cap',        `₹${Number(policy.coverage).toLocaleString('en-IN')}/week`],
+                      ['Triggers Covered',    plan?.triggers.join(', ') || '—'],
+                      ['Renews',              new Date(policy.endDate).toDateString()],
+                    ].map(([lbl, val]) => (
+                      <div key={lbl} className="policy-row">
+                        <span className="policy-label">{lbl}:</span>
+                        <span className="policy-value" style={{ maxWidth:'60%', textAlign:'right' }}>{val}</span>
+                      </div>
                     ))}
                   </div>
-                )}
-
-                <div className="policy-actions">
-                  {policy.paymentStatus !== 'paid' && (
-                    <button className="action-btn activate" disabled={paymentLoading === policy.id} onClick={() => handlePayment(policy.id)}>
-                      {paymentLoading === policy.id ? 'Processing...' : `Pay ${formatCurrency(policy.premium)}`}
-                    </button>
-                  )}
-                  {policy.status === 'paused' && (
-                    <button className="action-btn activate" disabled={actionLoading === policy.id} onClick={() => handleStatusChange(policy.id, 'active')}>
-                      {actionLoading === policy.id ? 'Updating...' : 'Reactivate'}
-                    </button>
-                  )}
-                  {policy.status === 'active' && (
-                    <button className="action-btn pause" disabled={actionLoading === policy.id} onClick={() => handleStatusChange(policy.id, 'paused')}>
-                      {actionLoading === policy.id ? 'Updating...' : 'Pause Policy'}
-                    </button>
-                  )}
-                  {(policy.status === 'active' || policy.status === 'paused') && (
-                    <button className="action-btn cancel" disabled={actionLoading === policy.id} onClick={() => handleStatusChange(policy.id, 'cancelled')}>
-                      {actionLoading === policy.id ? 'Updating...' : 'Cancel Policy'}
-                    </button>
-                  )}
-                  {(policy.status === 'cancelled' || policy.status === 'expired') && (
-                    <p className="muted-copy">This policy is {policy.status}. Create a new one above to resume coverage.</p>
-                  )}
+                  <div className="policy-actions" style={{ marginTop:'1.5rem' }}>
+                    {policy.status === 'paused'    && <button className="action-btn activate" disabled={actionLoading===policy.id} onClick={() => handleStatusChange(policy.id,'active')}>{actionLoading===policy.id?'Updating...':'▶ Reactivate'}</button>}
+                    {policy.status === 'active'    && <button className="action-btn pause"    disabled={actionLoading===policy.id} onClick={() => handleStatusChange(policy.id,'paused')}>{actionLoading===policy.id?'Updating...':'⏸ Pause'}</button>}
+                    {(policy.status==='active'||policy.status==='paused') && <button className="action-btn cancel" disabled={actionLoading===policy.id} onClick={() => handleStatusChange(policy.id,'cancelled')}>{actionLoading===policy.id?'Updating...':'✕ Cancel'}</button>}
+                    {(policy.status==='cancelled'||policy.status==='expired') && <p style={{ color:'#95a5a6', fontSize:14 }}>Policy {policy.status}. Create a new one above.</p>}
+                  </div>
                 </div>
-              </div>
-            </section>
-          ))
+              </section>
+            )
+          })
         )}
 
+        {/* ── Coverage / exclusions ── */}
         <section className="dashboard-section">
           <div className="info-card">
-            <h3>Zero-touch protections</h3>
-            <div className="trigger-chip-row">
-              <span className="trigger-chip">Heavy rain auto claim</span>
-              <span className="trigger-chip">Thunderstorm auto claim</span>
-              <span className="trigger-chip">Flood and waterlogging auto claim</span>
-              <span className="trigger-chip">Extreme heat auto claim</span>
-              <span className="trigger-chip">Civic restriction soft review</span>
+            <h3>How your contribution is calculated</h3>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, margin:'1rem 0' }}>
+              {PLANS.map(p => {
+                const wkPrem = Math.round((weeklyEarnings * parseFloat(p.rate) / 100) / 5) * 5
+                return (
+                  <div key={p.value} style={{ background:'var(--color-background-secondary)', borderRadius:8, padding:'10px 12px', fontSize:12 }}>
+                    <div style={{ fontWeight:500, color:'var(--color-text-primary)', marginBottom:4 }}>{p.label}</div>
+                    <div style={{ color:'var(--color-text-secondary)' }}>{p.rate} × ₹{weeklyEarnings.toLocaleString('en-IN')}/week</div>
+                    <div style={{ fontWeight:500, fontSize:14, color: p.color, margin:'4px 0' }}>= ₹{wkPrem}/week</div>
+                    <div style={{ color:'var(--color-text-secondary)', fontSize:12, fontWeight:500 }}>
+                      Coverage: ₹{(Math.round(weeklyEarnings * ({'2.0%':2,'3.5%':3.5,'5.0%':5}[p.rate]||3.5) / 50) * 50).toLocaleString('en-IN')}/week
+                    </div>
+                    <div style={{ color:'var(--color-text-tertiary)' }}>≈ ₹{Math.round(wkPrem*4.33).toLocaleString('en-IN')}/month</div>
+                  </div>
+                )
+              })}
             </div>
+            <p style={{ fontSize:12, color:'var(--color-text-secondary)' }}>
+              Based on your declared earnings of ₹{dailyEarnings}/day. Update in your profile to recalculate.
+            </p>
+
+            <h3 style={{ marginTop:'1.5rem' }}>What's covered</h3>
+            <ul className="coverage-list">
+              <li>✓ Loss of income from heavy rain (≥50mm/3hr) — all plans</li>
+              <li>✓ Loss of income from severe AQI (≥200 CPCB) — all plans</li>
+              <li>✓ Extreme heat (≥42°C sustained) — Standard & Pro</li>
+              <li>✓ Cyclone / state red alert — Standard & Pro</li>
+              <li>✓ Curfew / hartal / local strike — Pro only</li>
+            </ul>
+            <h3 style={{ marginTop:'1rem', color:'#e74c3c' }}>Strictly excluded</h3>
+            <ul className="coverage-list" style={{ color:'#e74c3c' }}>
+              <li>✗ Health, medical or hospitalisation expenses</li>
+              <li>✗ Vehicle damage, repair or fuel costs</li>
+              <li>✗ Accidents or personal injury</li>
+              <li>✗ Life insurance or death benefit</li>
+            </ul>
           </div>
         </section>
+
       </div>
+      {/* Payment modal */}
+      {payingPolicy && (
+        <PaymentModal
+          policy={payingPolicy}
+          onSuccess={(result) => {
+            setPayingPolicy(null)
+            setSuccess(`✅ Payment confirmed! Your ${result.planType} plan is active. Coverage: ₹${Number(result.coverage).toLocaleString('en-IN')}/week.`)
+            fetchPolicies()
+            setTimeout(() => setSuccess(''), 8000)
+          }}
+          onClose={() => {
+            setPayingPolicy(null)
+            setSuccess('Plan created but not yet paid. Complete payment to activate coverage.')
+            fetchPolicies()
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -70,9 +70,26 @@ if ($InstallDependencies) {
   Pop-Location
 }
 
+Start-ServiceWindow -Name 'ai-engine' -WorkingDirectory $aiPath -Command 'python app.py' -LogFile (Join-Path $root 'ai-engine-dev.log')
+
+# Wait for AI engine to be healthy before starting backend (up to 20s)
+Write-Host "`nWaiting for AI engine on port 5002..." -ForegroundColor Yellow
+$aiReady = $false
+for ($i = 0; $i -lt 20; $i++) {
+  Start-Sleep -Seconds 1
+  try {
+    $resp = Invoke-WebRequest -Uri 'http://localhost:5002/health' -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
+    if ($resp.StatusCode -eq 200) { $aiReady = $true; break }
+  } catch {}
+}
+if ($aiReady) {
+  Write-Host "AI engine ready." -ForegroundColor Green
+} else {
+  Write-Host "AI engine did not start in time - backend will use JS fallback." -ForegroundColor Yellow
+}
+
 Start-ServiceWindow -Name 'backend' -WorkingDirectory $backendPath -Command 'npm run dev' -LogFile (Join-Path $root 'backend-dev.log')
 Start-ServiceWindow -Name 'frontend' -WorkingDirectory $frontendPath -Command 'npm run dev' -LogFile (Join-Path $root 'frontend-dev.log')
-Start-ServiceWindow -Name 'ai-engine' -WorkingDirectory $aiPath -Command 'python app.py' -LogFile (Join-Path $root 'ai-engine-dev.log')
 
 Write-Host "`nGig-Shield services are starting." -ForegroundColor Green
 Write-Host "Frontend: http://localhost:5173" -ForegroundColor Gray

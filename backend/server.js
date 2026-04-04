@@ -1,101 +1,85 @@
-const express = require('express')
-const cors = require('cors')
-const dotenv = require('dotenv')
+const express  = require('express')
+const cors     = require('cors')
+const dotenv   = require('dotenv')
 const { connectDB } = require('./config/db')
 const { processAutomaticClaims } = require('./services/triggerService')
+const { renewExpiringPolicies }  = require('./services/policyRenewalService')
 
-// Load environment variables
 dotenv.config({ path: '../.env' })
 
-// Validate required environment variables at startup — fail fast
-const configChecks = [
-  {
-    key: 'JWT_SECRET',
-    isInvalid: (value) => !value || value.includes('your-'),
-    message: 'JWT auth is using a missing or placeholder secret.'
-  },
-  {
-    key: 'STRIPE_SECRET_KEY',
-    isInvalid: (value) => !value || value.includes('your-'),
-    message: 'Stripe is running in demo mode until a real secret key is provided.'
-  },
-  {
-    key: 'OPENWEATHER_API_KEY',
-    isInvalid: (value) => !value || value.includes('your-'),
-    message: 'Weather automation may fail until OPENWEATHER_API_KEY is configured.'
+// Validate required env vars at startup
+const required = ['JWT_SECRET', 'FRONTEND_URL']
+required.forEach(key => {
+  if (!process.env[key] || process.env[key].includes('your-')) {
+    if (key === 'FRONTEND_URL' && process.env.NODE_ENV === 'production') {
+      console.error(`ERROR: ${key} must be set in production — CORS will block all browser requests`)
+      process.exit(1)
+    }
+    console.warn(`WARNING: Environment variable ${key} is missing or still a placeholder`)
   }
-]
-
-configChecks.forEach(({ key, isInvalid, message }) => {
-  if (isInvalid(process.env[key] || '')) {
-    console.warn(`WARNING: ${message}`)
+})
+;['STRIPE_SECRET_KEY', 'OPENWEATHER_API_KEY'].forEach(key => {
+  if (!process.env[key] || process.env[key].includes('your-')) {
+    console.warn(`WARNING: ${key} not configured — related features will use fallback/mock mode`)
   }
 })
 
-// Import models to ensure they are registered
 require('./models/User')
 require('./models/Policy')
 require('./models/Claim')
 require('./models/RiskZone')
 
+connectDB()
+
 const app = express()
 
-// FIX: restrict CORS to your frontend origin only
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin:      process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true
 }))
-
 app.use(express.json())
 
+// Health check — used by start-dev.ps1 and deployment monitors
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'gig-shield-backend',
-    automationEnabled,
-    automationIntervalMinutes: Number(process.env.AUTOMATION_INTERVAL_MINUTES || 60)
-  })
+  res.json({ status: 'ok', uptime: Math.round(process.uptime()), env: process.env.NODE_ENV || 'development' })
 })
 
-// Routes
-app.use('/api/auth', require('./routes/authRoutes'))
+app.use('/api/auth',     require('./routes/authRoutes'))
 app.use('/api/policies', require('./routes/policyRoutes'))
-app.use('/api/claims', require('./routes/claimRoutes'))
+app.use('/api/claims',   require('./routes/claimRoutes'))
 app.use('/api/payments', require('./routes/paymentRoutes'))
-app.use('/api/admin', require('./routes/adminRoutes'))
-app.use('/api/user', require('./routes/userRoutes'))
+app.use('/api/admin',    require('./routes/adminRoutes'))
+app.use('/api/user',     require('./routes/userRoutes'))
 
-// FIX: global error handler — catches anything thrown in controllers
-// This removes the need for duplicate try/catch in every controller
+// Global error handler
 app.use((err, req, res, next) => {
-  const status = err.statusCode || 500
-  const message = err.message || 'Internal server error'
-  if (process.env.NODE_ENV !== 'production') {
-    console.error(err.stack)
-  }
+  const status  = err.statusCode || 500
+  const message = err.message    || 'Internal server error'
+  if (process.env.NODE_ENV !== 'production') console.error(err.stack)
   res.status(status).json({ message })
 })
 
-const PORT = process.env.PORT || 5000
-const automationEnabled = process.env.ENABLE_AUTOMATION !== 'false'
-const automationIntervalMs = Number(process.env.AUTOMATION_INTERVAL_MINUTES || 60) * 60 * 1000
-
-const startServer = async () => {
-  await connectDB()
-
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`)
-  })
-
-  if (automationEnabled) {
-    setInterval(processAutomaticClaims, automationIntervalMs)
-    processAutomaticClaims()
-  } else {
-    console.log('Automation scheduler disabled via ENABLE_AUTOMATION=false')
-  }
-}
-
-startServer().catch((error) => {
-  console.error('Failed to start server:', error)
-  process.exit(1)
+const PORT = process.env.PORT || 5001
+app.listen(PORT, () => {
+  console.log(`GigShield backend running on port ${PORT}`)
 })
+
+// ── Background jobs ───────────────────────────────────────────────────────────
+// FIX 🟠10: env flag prevents hammering weather API on every dev restart
+const DISABLE_JOBS = process.env.DISABLE_BACKGROUND_JOBS === 'true'
+
+if (DISABLE_JOBS) {
+  console.log('[jobs] Background jobs disabled (DISABLE_BACKGROUND_JOBS=true)')
+} else {
+  // Run parametric claim check on startup (after 5s delay for DB to settle)
+  setTimeout(processAutomaticClaims, 5000)
+  // Then every hour
+  setInterval(processAutomaticClaims, 60 * 60 * 1000)
+
+  // FIX 🟠10: policy auto-renewal — runs every 6 hours, renews expiring policies
+  setTimeout(renewExpiringPolicies, 10000)
+  setInterval(renewExpiringPolicies, 6 * 60 * 60 * 1000)
+
+  console.log('[jobs] Parametric claim check: every 60 minutes')
+  console.log('[jobs] Policy auto-renewal check: every 6 hours')
+}

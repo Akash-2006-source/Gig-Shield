@@ -2,14 +2,25 @@ import React from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import '../styles/dashboard.css'
 
+// FIX: safe parse — never crash on corrupted localStorage
+const getSavedUser = () => {
+  try {
+    const raw = localStorage.getItem('user')
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed?.token ? parsed : {}
+  } catch {
+    localStorage.removeItem('user')
+    return {}
+  }
+}
+
 const Navbar = () => {
   const location = useLocation()
-  const navigate = useNavigate()
+  const navigate  = useNavigate()
+  const user      = getSavedUser()
 
   const isActive = (path) => location.pathname === path ? 'active' : ''
-
-  // Get logged in user name from localStorage
-  const user = JSON.parse(localStorage.getItem('user') || '{}')
 
   const handleLogout = () => {
     localStorage.removeItem('user')
@@ -19,7 +30,9 @@ const Navbar = () => {
   return (
     <nav className="navbar">
       <div className="navbar-brand">
-        <h1>GigShield AI</h1>
+        <Link to={user?.role === 'admin' ? '/admin' : '/dashboard'} style={{ textDecoration: 'none', color: 'inherit' }}>
+          <h1>GigShield AI</h1>
+        </Link>
       </div>
       <ul className="navbar-links">
         <li>
@@ -28,20 +41,24 @@ const Navbar = () => {
         <li>
           <Link to="/policy" className={isActive('/policy')}>Policy</Link>
         </li>
+        <li>
+          <Link to="/claims/submit" className={isActive('/claims/submit')}>Submit Claim</Link>
+        </li>
         {user?.role === 'admin' && (
           <li>
             <Link to="/admin" className={isActive('/admin')}>Admin</Link>
           </li>
         )}
         <li>
+          <Link to="/complaints" className={isActive('/complaints')}>Help</Link>
+        </li>
+        <li>
           <Link to="/profile" className={isActive('/profile')}>
             👤 {user?.name || 'Account'}
           </Link>
         </li>
         <li>
-          <button className="logout-btn" onClick={handleLogout}>
-            Logout
-          </button>
+          <button className="logout-btn" onClick={handleLogout}>Logout</button>
         </li>
       </ul>
     </nav>

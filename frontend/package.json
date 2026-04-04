@@ -1,17 +1,12 @@
 {
   "name": "gig-shield-frontend",
   "version": "1.0.0",
-  "description": "Frontend for the Gig-Shield worker insurance platform",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
   "dependencies": {
     "axios": "^1.13.6",
     "react": "^19.2.4",

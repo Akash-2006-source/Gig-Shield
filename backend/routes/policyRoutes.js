@@ -3,7 +3,6 @@ const {
   getPolicies,
   getPolicyById,
   createPolicy,
-  getPolicyQuote,
   updatePolicy,
   updatePolicyStatus,
   getAllPolicies
@@ -13,7 +12,6 @@ const { protect, admin } = require('../middleware/authMiddleware')
 const router = express.Router()
 
 router.get('/', protect, getPolicies)
-router.post('/quote', protect, getPolicyQuote)
 router.get('/all', protect, admin, getAllPolicies)
 router.get('/:id', protect, getPolicyById)
 router.post('/', protect, createPolicy)

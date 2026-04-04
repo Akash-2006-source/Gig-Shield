@@ -1,99 +1,94 @@
-import React, { useState, useEffect } from 'react'
-import Navbar from '../components/Navbar'
-import StatCard from '../components/StatCard'
+import React, { useState, useEffect, useCallback } from 'react'
+import Navbar    from '../components/Navbar'
+import StatCard  from '../components/StatCard'
 import '../styles/dashboard.css'
-import { getDashboardStats, getRiskZones, getFraudAlerts, getAllClaims, updateClaimStatus } from '../services/adminService'
+import {
+  getDashboardStats, getRiskZones, getFraudAlerts,
+  getAllClaims, getFlaggedClaims, updateClaimStatus
+} from '../services/adminService'
 
 const AdminDashboard = () => {
-  const [metrics, setMetrics] = useState({
-    workersInsured: 0,
-    activePolicies: 0,
-    totalPremium: 0,
-    totalPayout: 0,
-    automatedClaims: 0,
-    flaggedClaims: 0
-  })
-  const [claimsOverview, setClaimsOverview] = useState({
-    claimsToday: 0,
-    claimsThisWeek: 0,
-    totalPayout: 0,
-    softReviewQueue: 0
-  })
-  const [automationMetrics, setAutomationMetrics] = useState({
-    automatedClaims: 0,
-    zeroTouchApproved: 0,
-    softReviewQueue: 0,
-    triggerBreakdown: {}
-  })
-  const [fraudAlerts, setFraudAlerts] = useState([])
-  const [riskZones, setRiskZones] = useState([])
-  const [claims, setClaims] = useState([])
-  const [claimActionLoading, setClaimActionLoading] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [metrics,       setMetrics]       = useState({ workersInsured:0, activePolicies:0, totalPremium:0, totalPayout:0, lossRatio:0, combinedRatio:0, targetLossRatio:65, flaggedClaims:0 })
+  const [claimsOverview,setClaimsOverview]= useState({ claimsToday:0, claimsThisWeek:0, totalPayout:0 })
+  const [fraudAlerts,   setFraudAlerts]   = useState([])
+  const [riskZones,     setRiskZones]     = useState([])
+  const [claims,        setClaims]        = useState([])
+  const [claimPage,     setClaimPage]     = useState(1)
+  const [claimTotal,    setClaimTotal]    = useState(0)
+  const [claimFilter,   setClaimFilter]   = useState('all')   // 'all' | 'flagged'
+  const [actionLoading, setActionLoading] = useState(null)
+  const [loading,       setLoading]       = useState(true)
+  const [error,         setError]         = useState(null)
+
+  const fetchClaims = useCallback(async (page = 1, filter = 'all') => {
+    try {
+      const res = filter === 'flagged'
+        ? await getFlaggedClaims(page)
+        : await getAllClaims(page)
+      setClaims(res.claims || [])
+      setClaimTotal(res.pagination?.total || 0)
+    } catch { /* silent — main load already shows error if needed */ }
+  }, [])
 
   useEffect(() => {
-    const fetchDashboardData = async () => {
+    const load = async () => {
       try {
-        const [statsResponse, riskZonesResponse, fraudResponse, claimsResponse] = await Promise.all([
-          getDashboardStats(),
-          getRiskZones(),
-          getFraudAlerts(),
-          getAllClaims()
+        const [stats, zones, fraud] = await Promise.all([
+          getDashboardStats(), getRiskZones(), getFraudAlerts()
         ])
-
-        setMetrics(statsResponse.platformMetrics)
-        setClaimsOverview(statsResponse.claimsOverview)
-        setAutomationMetrics(statsResponse.automationMetrics || {})
-        setRiskZones(riskZonesResponse)
-        setFraudAlerts(fraudResponse)
-        setClaims(claimsResponse)
+        setMetrics(stats.platformMetrics)
+        setClaimsOverview(stats.claimsOverview)
+        setRiskZones(zones)
+        setFraudAlerts(fraud)
+        await fetchClaims(1, 'all')
       } catch (err) {
         setError('Failed to load dashboard data')
-        console.error('Dashboard error:', err)
       } finally {
         setLoading(false)
       }
     }
+    load()
+  }, [fetchClaims])
 
-    fetchDashboardData()
-  }, [])
-
-  if (loading) {
-    return (
-      <div className="dashboard-container">
-        <Navbar />
-        <div className="dashboard-content">
-          <div className="loading">Loading dashboard...</div>
-        </div>
-      </div>
-    )
+  const handleFilterChange = (f) => {
+    setClaimFilter(f)
+    setClaimPage(1)
+    fetchClaims(1, f)
   }
 
-  if (error) {
-    return (
-      <div className="dashboard-container">
-        <Navbar />
-        <div className="dashboard-content">
-          <div className="error">{error}</div>
-        </div>
-      </div>
-    )
-  }
-
-  const getRiskClass = (level) => String(level || 'medium').toLowerCase()
-
-  const handleClaimDecision = async (claimId, status) => {
+  const handleClaimAction = async (claimId, status) => {
+    const notes = status === 'rejected'
+      ? window.prompt('Reason for rejection (shown to worker):') ?? ''
+      : ''
+    if (status === 'rejected' && notes === null) return // cancelled prompt
     try {
-      setClaimActionLoading(claimId)
-      const updated = await updateClaimStatus(claimId, status)
-      setClaims((currentClaims) => currentClaims.map((claim) => claim.id === claimId ? updated : claim))
+      setActionLoading(claimId)
+      await updateClaimStatus(claimId, status, notes)
+      fetchClaims(claimPage, claimFilter)
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to update claim status')
+      alert(err.response?.data?.message || 'Action failed')
     } finally {
-      setClaimActionLoading(null)
+      setActionLoading(null)
     }
   }
+
+  const handlePageChange = (p) => {
+    setClaimPage(p)
+    fetchClaims(p, claimFilter)
+  }
+
+  if (loading) return (
+    <div className="dashboard-container"><Navbar />
+      <div className="dashboard-content"><div className="loading">Loading dashboard...</div></div>
+    </div>
+  )
+  if (error) return (
+    <div className="dashboard-container"><Navbar />
+      <div className="dashboard-content"><div className="error">{error}</div></div>
+    </div>
+  )
+
+  const lrColor = metrics.lossRatio > 80 ? '#e74c3c' : metrics.lossRatio > 65 ? '#f39c12' : '#27ae60'
 
   return (
     <div className="dashboard-container">
@@ -101,187 +96,204 @@ const AdminDashboard = () => {
       <div className="dashboard-content">
         <h2 className="page-title">Admin Dashboard</h2>
 
+        {/* Platform Metrics */}
         <section className="dashboard-section">
           <h3>Platform Metrics</h3>
           <div className="stats-grid">
-            <StatCard title="Workers Insured" value={metrics.workersInsured} icon="Users" />
-            <StatCard title="Active Policies" value={metrics.activePolicies} icon="Policy" />
-            <StatCard title="Total Premium Collected" value={`Rs${metrics.totalPremium.toLocaleString()}`} icon="Premium" />
-            <StatCard title="Total Payout" value={`Rs${metrics.totalPayout.toLocaleString()}`} icon="Payout" />
+            <StatCard title="Workers Insured"         value={metrics.workersInsured}                       icon="👥" />
+            <StatCard title="Active Policies"         value={metrics.activePolicies}                       icon="📋" />
+            <StatCard title="Total Premium Collected" value={`₹${metrics.totalPremium.toLocaleString()}`}  icon="💰" />
+            <StatCard title="Total Payout"            value={`₹${metrics.totalPayout.toLocaleString()}`}   icon="💸" />
           </div>
         </section>
 
+        {/* Actuarial Metrics */}
         <section className="dashboard-section">
-          <h3>Claims Automation</h3>
+          <h3>Actuarial Health</h3>
           <div className="info-card">
             <div className="info-grid">
               <div className="info-item">
-                <span className="label">Claims Today:</span>
+                <span className="label">Loss Ratio</span>
+                <span className="value" style={{ color: lrColor, fontWeight: 700 }}>
+                  {metrics.lossRatio}%
+                </span>
+              </div>
+              <div className="info-item">
+                <span className="label">Combined Ratio</span>
+                <span className="value">{metrics.combinedRatio}%</span>
+              </div>
+              <div className="info-item">
+                <span className="label">Target Loss Ratio</span>
+                <span className="value">{metrics.targetLossRatio}%</span>
+              </div>
+              <div className="info-item">
+                <span className="label">Flagged Claims</span>
+                <span className="value" style={{ color: metrics.flaggedClaims > 0 ? '#e74c3c' : 'inherit' }}>
+                  {metrics.flaggedClaims}
+                </span>
+              </div>
+              <div className="info-item">
+                <span className="label">Claims Today</span>
                 <span className="value">{claimsOverview.claimsToday}</span>
               </div>
               <div className="info-item">
-                <span className="label">Claims This Week:</span>
+                <span className="label">Claims This Week</span>
                 <span className="value">{claimsOverview.claimsThisWeek}</span>
               </div>
-              <div className="info-item">
-                <span className="label">Automated Claims:</span>
-                <span className="value">{automationMetrics.automatedClaims || 0}</span>
-              </div>
-              <div className="info-item">
-                <span className="label">Zero-touch Approved:</span>
-                <span className="value">{automationMetrics.zeroTouchApproved || 0}</span>
-              </div>
-              <div className="info-item">
-                <span className="label">Soft Review Queue:</span>
-                <span className="value">{claimsOverview.softReviewQueue || 0}</span>
-              </div>
-              <div className="info-item">
-                <span className="label">Flagged Claims:</span>
-                <span className="value">{metrics.flaggedClaims || 0}</span>
-              </div>
+            </div>
+            <p style={{ fontSize: '12px', color: '#888', marginTop: '0.75rem' }}>
+              Target loss ratio: 63–68%. Above 80% is a loss-making position.
+            </p>
+          </div>
+        </section>
+
+        {/* Claims Management */}
+        <section className="dashboard-section">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <h3 style={{ margin: 0 }}>Claims Management</h3>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              {['all', 'flagged'].map(f => (
+                <button key={f} onClick={() => handleFilterChange(f)}
+                  style={{
+                    padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 500, cursor: 'pointer',
+                    border: '1px solid var(--color-border-secondary)',
+                    background: claimFilter === f ? 'var(--color-text-primary)' : 'transparent',
+                    color: claimFilter === f ? 'var(--color-background-primary)' : 'var(--color-text-secondary)'
+                  }}>
+                  {f === 'all' ? `All (${claimTotal})` : `Flagged (${metrics.flaggedClaims})`}
+                </button>
+              ))}
             </div>
           </div>
-        </section>
-
-        <section className="dashboard-section">
-          <h3>Trigger Breakdown</h3>
           <div className="table-card">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Trigger Type</th>
-                  <th>Claims This Week</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(automationMetrics.triggerBreakdown || {}).length === 0 ? (
-                  <tr>
-                    <td colSpan="2">No automated claims recorded yet.</td>
-                  </tr>
-                ) : (
-                  Object.entries(automationMetrics.triggerBreakdown || {}).map(([trigger, count]) => (
-                    <tr key={trigger}>
-                      <td>{trigger}</td>
-                      <td>{count}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section className="dashboard-section">
-          <h3>Claim Review Queue</h3>
-          <div className="table-card">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Worker</th>
-                  <th>Description</th>
-                  <th>Source</th>
-                  <th>Amount</th>
-                  <th>Status</th>
-                  <th>Action</th>
+                  <th>#</th><th>Worker</th><th>Trigger / Type</th><th>Amount</th><th>Date</th><th>Status</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {claims.length === 0 ? (
-                  <tr>
-                    <td colSpan="6">No claims found.</td>
+                  <tr><td colSpan="7" style={{ textAlign: 'center', color: '#888', padding: '1.5rem' }}>No claims found.</td></tr>
+                ) : claims.map(claim => (
+                  <tr key={claim.id}>
+                    <td style={{ fontSize: '12px', color: '#888' }}>#{claim.id}</td>
+                    <td>
+                      <div style={{ fontSize: '13px', fontWeight: 500 }}>{claim.user?.name || '—'}</div>
+                      <div style={{ fontSize: '11px', color: '#888' }}>{claim.user?.email}</div>
+                    </td>
+                    <td style={{ fontSize: '12px', maxWidth: '180px' }}>
+                      <div style={{ fontWeight: 500 }}>{claim.triggerType || 'Manual'}</div>
+                      <div style={{ color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {claim.description?.slice(0, 60)}{claim.description?.length > 60 ? '…' : ''}
+                      </div>
+                    </td>
+                    <td style={{ fontWeight: 600 }}>₹{Number(claim.amount).toLocaleString()}</td>
+                    <td style={{ fontSize: '12px', color: '#888' }}>
+                      {new Date(claim.submittedAt).toLocaleDateString('en-IN')}
+                    </td>
+                    <td>
+                      <span className={`status-badge ${claim.status?.toLowerCase()}`}>
+                        {claim.status}
+                      </span>
+                    </td>
+                    <td>
+                      {(claim.status === 'pending' || claim.status === 'flagged') ? (
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <button className="action-btn activate"
+                            style={{ padding: '3px 10px', fontSize: '12px' }}
+                            disabled={actionLoading === claim.id}
+                            onClick={() => handleClaimAction(claim.id, 'approved')}>
+                            {actionLoading === claim.id ? '…' : '✓'}
+                          </button>
+                          <button className="action-btn cancel"
+                            style={{ padding: '3px 10px', fontSize: '12px' }}
+                            disabled={actionLoading === claim.id}
+                            onClick={() => handleClaimAction(claim.id, 'rejected')}>
+                            {actionLoading === claim.id ? '…' : '✕'}
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '12px', color: '#aaa' }}>—</span>
+                      )}
+                    </td>
                   </tr>
-                ) : (
-                  claims.map((claim) => (
-                    <tr key={claim.id}>
-                      <td>{claim.user?.name || 'Unknown worker'}</td>
-                      <td>{claim.description}</td>
-                      <td>{claim.source || 'manual'}</td>
-                      <td>Rs{Number(claim.amount).toFixed(2)}</td>
-                      <td>{claim.status}</td>
-                      <td>
-                        {(claim.status === 'pending' || claim.status === 'flagged') ? (
-                          <div className="table-action-row">
-                            <button
-                              className="mini-action approve"
-                              disabled={claimActionLoading === claim.id}
-                              onClick={() => handleClaimDecision(claim.id, 'approved')}
-                            >
-                              Approve
-                            </button>
-                            <button
-                              className="mini-action reject"
-                              disabled={claimActionLoading === claim.id}
-                              onClick={() => handleClaimDecision(claim.id, 'rejected')}
-                            >
-                              Reject
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="muted-copy">Closed</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
+                ))}
               </tbody>
             </table>
+            {claimTotal > 20 && (
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', padding: '0.75rem', borderTop: '1px solid var(--color-border-tertiary)' }}>
+                <button disabled={claimPage === 1} onClick={() => handlePageChange(claimPage - 1)}
+                  style={{ padding: '4px 12px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px', border: '1px solid var(--color-border-secondary)', background: 'transparent', color: 'var(--color-text-primary)' }}>
+                  ← Prev
+                </button>
+                <span style={{ fontSize: '12px', color: '#888', alignSelf: 'center' }}>
+                  Page {claimPage} of {Math.ceil(claimTotal / 20)}
+                </span>
+                <button disabled={claimPage >= Math.ceil(claimTotal / 20)} onClick={() => handlePageChange(claimPage + 1)}
+                  style={{ padding: '4px 12px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px', border: '1px solid var(--color-border-secondary)', background: 'transparent', color: 'var(--color-text-primary)' }}>
+                  Next →
+                </button>
+              </div>
+            )}
           </div>
         </section>
 
+        {/* Fraud Alerts */}
         <section className="dashboard-section">
           <h3>Fraud Detection Alerts</h3>
           <div className="table-card">
             <table className="data-table">
               <thead>
-                <tr>
-                  <th>Alert Type</th>
-                  <th>User / Owner</th>
-                  <th>Details</th>
-                  <th>Severity</th>
-                </tr>
+                <tr><th>Worker</th><th>Claims (7d)</th><th>Risk Score</th><th>Severity</th><th>Reasons</th></tr>
               </thead>
               <tbody>
                 {fraudAlerts.length === 0 ? (
-                  <tr>
-                    <td colSpan="4">No fraud alerts at the moment.</td>
+                  <tr><td colSpan="5" style={{ textAlign: 'center', color: '#888', padding: '1.5rem' }}>No fraud alerts this week.</td></tr>
+                ) : fraudAlerts.map(alert => (
+                  <tr key={alert.id}>
+                    <td>
+                      <div style={{ fontWeight: 500 }}>{alert.userName || '—'}</div>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>{alert.claimCount}</td>
+                    <td style={{ textAlign: 'center', fontWeight: 600,
+                      color: alert.riskScore > 50 ? '#e74c3c' : alert.riskScore > 20 ? '#f39c12' : '#27ae60' }}>
+                      {alert.riskScore}
+                    </td>
+                    <td>
+                      <span className={`severity-badge ${alert.severity}`}>
+                        {alert.severity?.toUpperCase()}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: '12px', color: '#666' }}>
+                      {alert.reasons?.join('; ') || alert.type}
+                    </td>
                   </tr>
-                ) : (
-                  fraudAlerts.map((alert) => (
-                    <tr key={alert.id}>
-                      <td>{alert.type}</td>
-                      <td>{alert.user}</td>
-                      <td>{alert.details}</td>
-                      <td>
-                        <span className={`severity-badge ${alert.severity}`}>
-                          {alert.severity.toUpperCase()}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
+                ))}
               </tbody>
             </table>
           </div>
         </section>
 
+        {/* Risk Zones */}
         <section className="dashboard-section">
           <h3>Risk Zones</h3>
           <div className="table-card">
             <table className="data-table">
               <thead>
-                <tr>
-                  <th>Area</th>
-                  <th>Risk Level</th>
-                </tr>
+                <tr><th>City</th><th>Risk Level</th><th>Peak Hazard</th></tr>
               </thead>
               <tbody>
-                {riskZones.map((zone) => (
-                  <tr key={zone.id || zone.location}>
-                    <td>{zone.location}</td>
+                {riskZones.map((zone, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 500 }}>{zone.location}</td>
                     <td>
-                      <span className={`risk-badge ${getRiskClass(zone.riskLevel)}`}>
+                      <span className={`risk-badge ${zone.riskLevel?.toLowerCase()}`}>
                         {zone.riskLevel}
                       </span>
+                    </td>
+                    <td style={{ fontSize: '12px', color: '#666' }}>
+                      {zone.weatherConditions?.primaryHazard || '—'}
                     </td>
                   </tr>
                 ))}

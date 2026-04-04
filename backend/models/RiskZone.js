@@ -13,7 +13,7 @@ const RiskZone = sequelize.define('RiskZone', {
     unique: true
   },
   riskLevel: {
-    type: DataTypes.ENUM('low', 'medium', 'high'),
+    type: DataTypes.STRING, // 'low' | 'medium' | 'high'
     allowNull: false
   },
   weatherConditions: {

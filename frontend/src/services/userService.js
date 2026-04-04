@@ -15,3 +15,5 @@ export const getDashboardData = async () => {
     throw error
   }
 }
+
+export const updateProfile = (data) => api.put('/user/profile', data).then(r => r.data)

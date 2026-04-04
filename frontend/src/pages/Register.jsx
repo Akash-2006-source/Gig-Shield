@@ -3,75 +3,60 @@ import { Link, useNavigate } from 'react-router-dom'
 import { registerUser } from '../services/authService'
 import '../styles/dashboard.css'
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const PLATFORMS = ['Zomato', 'Swiggy', 'Zepto', 'Blinkit', 'Amazon', 'Flipkart', 'Other']
 
 const Register = () => {
   const navigate = useNavigate()
   const [formData, setFormData] = useState({
-    fullName: '',
-    platform: '',
-    workCity: '',
+    fullName:           '',
+    platform:           '',
+    workCity:           '',
     averageDailyIncome: '',
-    email: '',
-    password: ''
+    email:              '',
+    password:           ''
   })
-  const [error, setError] = useState('')
+  const [error,   setError]   = useState('')
   const [loading, setLoading] = useState(false)
 
-  const platforms = ['Zomato', 'Swiggy', 'Zepto', 'Amazon', 'Flipkart']
-
   const handleChange = (e) => {
-    const { name, value } = e.target
-    const normalizedValue = name === 'email'
-      ? value.replace(/\s+/g, '')
-      : value
-
-    setFormData({ ...formData, [name]: normalizedValue })
+    setFormData({ ...formData, [e.target.name]: e.target.value })
     setError('')
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
 
-    const normalizedEmail = formData.email.trim().toLowerCase()
-    const normalizedName = formData.fullName.trim()
-    const normalizedCity = formData.workCity.trim()
-    const normalizedIncome = Number(formData.averageDailyIncome)
-
-    if (!normalizedName || !formData.platform || !normalizedCity ||
-        !formData.averageDailyIncome || !normalizedEmail || !formData.password) {
+    if (!formData.fullName || !formData.platform || !formData.workCity ||
+        !formData.averageDailyIncome || !formData.email || !formData.password) {
       setError('Please fill in all fields')
       return
     }
 
-    if (!EMAIL_REGEX.test(normalizedEmail)) {
-      setError('Please enter a valid email address')
+    if (formData.password.length < 8) {
+      setError('Password must be at least 8 characters')
       return
     }
 
-    if (!Number.isFinite(normalizedIncome) || normalizedIncome <= 0) {
-      setError('Please enter a valid average daily income')
-      return
-    }
-
-    if (formData.password.length < 6) {
-      setError('Password must be at least 6 characters')
+    const income = parseFloat(formData.averageDailyIncome)
+    if (isNaN(income) || income <= 0 || income > 5000) {
+      setError('Average daily income must be between ₹1 and ₹5,000')
       return
     }
 
     try {
       setLoading(true)
-      // FIX: actually call the real API
-      await registerUser({
-        name: normalizedName,
-        email: normalizedEmail,
-        password: formData.password,
-        occupation: formData.platform,
-        location: normalizedCity,
-        averageDailyIncome: normalizedIncome
+      const userData = await registerUser({
+        name:             formData.fullName,
+        email:            formData.email,
+        password:         formData.password,
+        platform:         formData.platform,
+        location:         formData.workCity,
+        avgDailyEarnings: income
       })
 
-      navigate('/login')
+      // Store user in localStorage so they're immediately logged in
+      localStorage.setItem('user', JSON.stringify(userData))
+      navigate('/dashboard')
     } catch (err) {
       setError(err.response?.data?.message || 'Registration failed. Please try again.')
     } finally {
@@ -86,7 +71,7 @@ const Register = () => {
 
         {error && <div className="error-message">{error}</div>}
 
-        <form onSubmit={handleSubmit} className="auth-form" noValidate>
+        <form onSubmit={handleSubmit} className="auth-form">
           <div className="form-group">
             <label>Full Name</label>
             <input
@@ -108,8 +93,8 @@ const Register = () => {
               required
             >
               <option value="">Select Platform</option>
-              {platforms.map(platform => (
-                <option key={platform} value={platform}>{platform}</option>
+              {PLATFORMS.map(p => (
+                <option key={p} value={p}>{p}</option>
               ))}
             </select>
           </div>
@@ -121,7 +106,7 @@ const Register = () => {
               name="workCity"
               value={formData.workCity}
               onChange={handleChange}
-              placeholder="Enter your work city"
+              placeholder="e.g. Chennai, Mumbai, Delhi"
               required
             />
           </div>
@@ -133,20 +118,24 @@ const Register = () => {
               name="averageDailyIncome"
               value={formData.averageDailyIncome}
               onChange={handleChange}
-              placeholder="Enter average daily income"
+              placeholder="e.g. 700"
+              min="1"
+              max="5000"
               required
             />
+            <small style={{ color: 'var(--color-text-secondary)', fontSize: '12px' }}>
+              Used to calculate your income-loss payout accurately
+            </small>
           </div>
 
           <div className="form-group">
             <label>Email</label>
             <input
-              type="text"
+              type="email"
               name="email"
               value={formData.email}
               onChange={handleChange}
               placeholder="Enter your email"
-              autoComplete="email"
               required
             />
           </div>
@@ -158,7 +147,7 @@ const Register = () => {
               name="password"
               value={formData.password}
               onChange={handleChange}
-              placeholder="Create a password (min 6 characters)"
+              placeholder="Create a password (min 8 characters)"
               required
             />
           </div>

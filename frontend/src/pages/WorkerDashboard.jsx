@@ -1,68 +1,183 @@
-import React, { useState, useEffect } from 'react'
-import Navbar from '../components/Navbar'
-import WorkerCard from '../components/WorkerCard'
-import ClaimAlert from '../components/ClaimAlert'
+import React, { useState, useEffect, useCallback } from 'react'
+import Navbar      from '../components/Navbar'
+import WorkerCard  from '../components/WorkerCard'
+import ClaimAlert  from '../components/ClaimAlert'
 import '../styles/dashboard.css'
-import { getDashboardData } from '../services/userService'
-import { getClaims, submitClaim } from '../services/claimService'
-import api from '../services/api'
+import { getDashboardData, updateProfile } from '../services/userService'
+import { getClaims }                         from '../services/claimService'
 
-const PLATFORMS = ['Zomato', 'Swiggy', 'Zepto', 'Amazon', 'Flipkart', 'Other']
+const PLATFORMS = ['Zomato', 'Swiggy', 'Zepto', 'Blinkit', 'Amazon', 'Flipkart', 'Other']
 
+// ── Build dynamic alerts from live data ──────────────────────────────────────
+const buildAlerts = (weather, claims) => {
+  const alerts = []
+
+  // FIX: generate weather alerts from actual API data, not hardcoded strings
+  if (weather) {
+    const cond = weather.condition?.toLowerCase() ?? ''
+
+    if (cond === 'rain' || cond === 'drizzle') {
+      alerts.push({
+        id: 'weather-rain',
+        title: '🌧️ Rain Alert — Parametric trigger active',
+        message: `Rainfall detected in your area (${weather.temperature}°C, ${weather.humidity}% humidity). If rainfall exceeds 50mm/3hr, your income-loss claim will be filed automatically.`,
+        type: 'warning'
+      })
+    } else if (cond === 'thunderstorm') {
+      alerts.push({
+        id: 'weather-storm',
+        title: '⛈️ Thunderstorm — Auto-claim likely',
+        message: `Thunderstorm conditions active in ${weather.location || 'your area'}. Parametric trigger is monitoring — payout will be initiated if thresholds are met.`,
+        type: 'danger'
+      })
+    } else if (weather.temperature >= 42) {
+      alerts.push({
+        id: 'weather-heat',
+        title: '🌡️ Extreme Heat Alert',
+        message: `Temperature is ${weather.temperature}°C — exceeds 42°C threshold. Standard/Pro plan holders may be eligible for an auto-claim.`,
+        type: 'warning'
+      })
+    } else if (weather.aqi && weather.aqi >= 200) {
+      alerts.push({
+        id: 'weather-aqi',
+        title: '😷 Severe AQI Alert',
+        message: `Air quality index is ${weather.aqi} (Severe). Outdoor delivery is hazardous. Auto-claim may be triggered for eligible plan holders.`,
+        type: 'warning'
+      })
+    } else {
+      alerts.push({
+        id: 'weather-ok',
+        title: '✅ Weather monitoring active',
+        message: `Current conditions are normal (${weather.condition}, ${weather.temperature}°C). Your area is being monitored for disruptions.`,
+        type: 'info'
+      })
+    }
+  }
+
+  // FIX: show alert for any pending/processing claims
+  const pendingClaims = claims.filter(c => c.status === 'pending' || c.status === 'approved' && !c.processedAt)
+  if (pendingClaims.length > 0) {
+    alerts.push({
+      id: 'claim-pending',
+      title: `💰 ${pendingClaims.length} claim(s) in progress`,
+      message: `You have ${pendingClaims.length} pending claim(s). Payouts are processed within 4 hours via UPI.`,
+      amount: pendingClaims.reduce((sum, c) => sum + parseFloat(c.amount || 0), 0),
+      type: 'info'
+    })
+  }
+
+  return alerts
+}
+
+
+// ── Mini bar chart — monthly payouts vs premiums ─────────────────────────────
+const PayoutChart = ({ claims, weeklyPremium }) => {
+  if (!claims || claims.length === 0) return null
+
+  // Bucket claims into last 8 weeks
+  const now = Date.now()
+  const WEEK = 7 * 24 * 60 * 60 * 1000
+  const weeks = Array.from({ length: 8 }, (_, i) => {
+    const start = now - (8 - i) * WEEK
+    const end   = start + WEEK
+    const payout = claims
+      .filter(cl => {
+        const t = new Date(cl.submittedAt).getTime()
+        return t >= start && t < end && cl.status === 'approved'
+      })
+      .reduce((s, cl) => s + parseFloat(cl.amount || 0), 0)
+    return { label: `W${i + 1}`, payout, premium: parseFloat(weeklyPremium) || 0 }
+  })
+
+  const maxVal = Math.max(...weeks.map(w => Math.max(w.payout, w.premium)), 1)
+  const H = 80, W = 280, barW = 14, gap = 6, groupW = barW * 2 + gap + 8
+
+  return (
+    <div style={{ marginTop: '0.75rem' }}>
+      <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '4px', display: 'flex', gap: '12px' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ width: 10, height: 10, background: '#667eea', borderRadius: 2, display: 'inline-block' }}></span> Payout received
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ width: 10, height: 10, background: '#e2e8f0', borderRadius: 2, display: 'inline-block' }}></span> Premium paid
+        </span>
+      </div>
+      <svg width="100%" viewBox={`0 0 ${groupW * 8 + 20} ${H + 20}`} style={{ overflow: 'visible' }}>
+        {weeks.map((w, i) => {
+          const x    = 10 + i * groupW
+          const payH = Math.round((w.payout  / maxVal) * H)
+          const preH = Math.round((w.premium / maxVal) * H)
+          return (
+            <g key={i}>
+              <rect x={x}          y={H - payH} width={barW} height={payH || 2} fill="#667eea" rx="2" opacity="0.85" />
+              <rect x={x + barW + gap} y={H - preH} width={barW} height={preH || 2} fill="#e2e8f0" rx="2" />
+              <text x={x + barW} y={H + 14} textAnchor="middle" fontSize="9" fill="var(--color-text-tertiary)">{w.label}</text>
+            </g>
+          )
+        })}
+        <line x1="10" y1={H} x2={groupW * 8 + 10} y2={H} stroke="var(--color-border-tertiary)" strokeWidth="0.5" />
+      </svg>
+    </div>
+  )
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
 const WorkerDashboard = () => {
-  const [dashboardData, setDashboardData] = useState(null)
-  const [claimsHistory, setClaimsHistory] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [dashboardData,  setDashboardData]  = useState(null)
+  const [claimsHistory,  setClaimsHistory]  = useState([])
+  const [alerts,         setAlerts]         = useState([])
+  const [loading,        setLoading]        = useState(true)
+  const [error,          setError]          = useState(null)
   const [showProfileForm, setShowProfileForm] = useState(false)
-  const [profileForm, setProfileForm] = useState({ location: '', occupation: '' })
+  const [profileForm,    setProfileForm]    = useState({ location: '', platform: '', avgDailyEarnings: '', deliveryZone: '' })
   const [profileLoading, setProfileLoading] = useState(false)
-  const [profileMsg, setProfileMsg] = useState('')
-  const [claimForm, setClaimForm] = useState({ amount: '', description: '' })
-  const [claimLoading, setClaimLoading] = useState(false)
-  const [claimMsg, setClaimMsg] = useState('')
+  const [profileMsg,     setProfileMsg]     = useState('')
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const [dashboardResult, claimsResult] = await Promise.allSettled([
+      const [dashRes, claimsRes] = await Promise.all([
         getDashboardData(),
         getClaims()
       ])
-
-      if (dashboardResult.status !== 'fulfilled') {
-        throw dashboardResult.reason
-      }
-
-      const dashboardResponse = dashboardResult.value
-      const claimsResponse = claimsResult.status === 'fulfilled' ? claimsResult.value : []
-
-      setDashboardData(dashboardResponse)
-      setClaimsHistory(claimsResponse)
+      setDashboardData(dashRes)
+      setClaimsHistory(claimsRes)
       setProfileForm({
-        location: dashboardResponse?.user?.location || '',
-        occupation: dashboardResponse?.user?.occupation || ''
+        location:          dashRes?.user?.location          || '',
+        platform:          dashRes?.user?.platform          || dashRes?.user?.occupation || '',
+        avgDailyEarnings:  dashRes?.user?.avgDailyEarnings  || '',
+        deliveryZone:      dashRes?.user?.deliveryZone      || ''
       })
+      // FIX: build alerts from live data
+      setAlerts(buildAlerts(dashRes?.weather, claimsRes))
     } catch (err) {
       setError('Failed to load dashboard data')
       console.error('Dashboard error:', err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  useEffect(() => { fetchData() }, [])
+  useEffect(() => { fetchData() }, [fetchData])
 
-  const handleProfileUpdate = async (event) => {
-    event.preventDefault()
+  const handleProfileUpdate = async (e) => {
+    e.preventDefault()
     setProfileMsg('')
-    if (!profileForm.location || !profileForm.occupation) {
-      setProfileMsg('Please fill in both fields')
+    if (!profileForm.location || !profileForm.platform) {
+      setProfileMsg('Please fill in at least location and platform')
       return
     }
     try {
       setProfileLoading(true)
-      await api.put('/user/profile', profileForm)
-      setProfileMsg('Profile updated successfully!')
+      await updateProfile({
+        location:         profileForm.location,
+        platform:         profileForm.platform,
+        occupation:       profileForm.platform,
+        deliveryZone:     profileForm.deliveryZone || undefined,
+        avgDailyEarnings: profileForm.avgDailyEarnings
+          ? parseFloat(profileForm.avgDailyEarnings)
+          : undefined
+      })
+      setProfileMsg('✅ Profile updated successfully!')
       setShowProfileForm(false)
       fetchData()
     } catch (err) {
@@ -72,79 +187,30 @@ const WorkerDashboard = () => {
     }
   }
 
-  const handleClaimSubmit = async (event) => {
-    event.preventDefault()
-    setClaimMsg('')
+  if (loading) return (
+    <div className="dashboard-container">
+      <Navbar />
+      <div className="dashboard-content"><div className="loading">Loading dashboard...</div></div>
+    </div>
+  )
 
-    if (!dashboardData?.policy?.id) {
-      setClaimMsg('Create a policy before submitting a claim.')
-      return
-    }
-
-    if (!claimForm.amount || !claimForm.description) {
-      setClaimMsg('Enter both an amount and a disruption description.')
-      return
-    }
-
-    try {
-      setClaimLoading(true)
-      const result = await submitClaim({
-        policyId: dashboardData.policy.id,
-        amount: Number(claimForm.amount),
-        description: claimForm.description
-      })
-      setClaimMsg(result.fraudAlert ? 'Claim submitted and moved to soft review.' : 'Claim submitted successfully.')
-      setClaimForm({ amount: '', description: '' })
-      await fetchData()
-    } catch (err) {
-      setClaimMsg(err.response?.data?.message || 'Failed to submit claim')
-    } finally {
-      setClaimLoading(false)
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="dashboard-container">
-        <Navbar />
-        <div className="dashboard-content">
-          <div className="loading">Loading dashboard...</div>
-        </div>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="dashboard-container">
-        <Navbar />
-        <div className="dashboard-content">
-          <div className="error">{error}</div>
-        </div>
-      </div>
-    )
-  }
+  if (error) return (
+    <div className="dashboard-container">
+      <Navbar />
+      <div className="dashboard-content"><div className="error">{error}</div></div>
+    </div>
+  )
 
   const workerData = {
-    name: dashboardData?.user?.name || 'User',
-    platform: dashboardData?.policy?.occupation || dashboardData?.user?.occupation || '-',
-    location: dashboardData?.policy?.location || dashboardData?.user?.location || '-',
-    weeklyPremium: dashboardData?.policy?.premium || 0,
-    coverageLimit: dashboardData?.policy?.coverage || 0,
-    status: dashboardData?.policy?.status || 'Inactive',
-    riskLevel: dashboardData?.policy?.riskLevel || dashboardData?.riskLevel || 'medium',
-    earningsProtected: dashboardData?.earningsProtected || 0
+    name:             dashboardData?.user?.name             || 'User',
+    platform:         dashboardData?.user?.occupation       || '—',
+    location:         dashboardData?.user?.location         || '—',
+    weeklyPremium:    dashboardData?.policy?.premium        || 0,
+    coverageLimit:    dashboardData?.policy?.coverage       || 0,
+    status:           dashboardData?.policy?.status         || 'Inactive',
+    riskLevel:        dashboardData?.riskLevel              || 'Medium',
+    earningsProtected: dashboardData?.earningsProtected     || 0
   }
-
-  const alerts = [
-    { id: 1, title: 'Automation active', message: 'Zero-touch claim monitoring is running against live and mock disruption feeds.', amount: null },
-    ...(dashboardData?.activeTriggers || []).map((trigger) => ({
-      id: trigger.type,
-      title: trigger.title,
-      message: `${trigger.description} Source: ${trigger.source}.`,
-      amount: trigger.autoApprove ? `Projected payout Rs${trigger.payoutAmount}` : `Projected payout Rs${trigger.payoutAmount} after review`
-    }))
-  ]
 
   const needsProfile = !dashboardData?.user?.location || !dashboardData?.user?.occupation
 
@@ -154,50 +220,77 @@ const WorkerDashboard = () => {
       <div className="dashboard-content">
         <h2 className="page-title">Worker Dashboard</h2>
 
+        {/* Incomplete profile banner */}
         {needsProfile && !showProfileForm && (
           <div className="profile-banner">
-            Your work location and platform are not set.
+            ⚠️ Your work location and platform are not set.
             <button className="link-btn" onClick={() => setShowProfileForm(true)}>
-              Set them now
+              Set them now →
             </button>
           </div>
         )}
 
+        {/* Profile update form */}
         {showProfileForm && (
-          <div className="info-card bottom-space">
+          <div className="info-card" style={{ marginBottom: '1.5rem' }}>
             <h3>Update Work Details</h3>
             {profileMsg && (
-              <div className={profileMsg.includes('successfully') ? 'success-message' : 'error-message'}>
+              <div className={profileMsg.startsWith('✅') ? 'success-message' : 'error-message'}>
                 {profileMsg}
               </div>
             )}
-            <form onSubmit={handleProfileUpdate} className="auth-form top-space">
+            <form onSubmit={handleProfileUpdate} className="auth-form" style={{ marginTop: '1rem' }}>
               <div className="form-group">
                 <label>Work City / Location</label>
                 <input
                   type="text"
                   value={profileForm.location}
-                  onChange={(event) => setProfileForm({ ...profileForm, location: event.target.value })}
-                  placeholder="e.g. Mumbai, Delhi, Bangalore"
+                  onChange={e => setProfileForm({ ...profileForm, location: e.target.value })}
+                  placeholder="e.g. Chennai, Mumbai, Delhi"
                   required
                 />
               </div>
               <div className="form-group">
                 <label>Delivery Platform</label>
                 <select
-                  value={profileForm.occupation}
-                  onChange={(event) => setProfileForm({ ...profileForm, occupation: event.target.value })}
+                  value={profileForm.platform}
+                  onChange={e => setProfileForm({ ...profileForm, platform: e.target.value })}
                   required
                 >
                   <option value="">Select Platform</option>
-                  {PLATFORMS.map((platform) => <option key={platform} value={platform}>{platform}</option>)}
+                  {PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
               </div>
-              <div className="button-row">
+              {/* FIX: new fields for earnings profile */}
+              <div className="form-group">
+                <label>Avg Daily Earnings (₹) <span style={{ color: '#888', fontSize: '12px' }}>— used to size your payout</span></label>
+                <input
+                  type="number"
+                  value={profileForm.avgDailyEarnings}
+                  onChange={e => setProfileForm({ ...profileForm, avgDailyEarnings: e.target.value })}
+                  placeholder="e.g. 820"
+                  min="100"
+                  max="5000"
+                />
+              </div>
+              <div className="form-group">
+                <label>Delivery Zone (optional)</label>
+                <input
+                  type="text"
+                  value={profileForm.deliveryZone}
+                  onChange={e => setProfileForm({ ...profileForm, deliveryZone: e.target.value })}
+                  placeholder="e.g. T. Nagar / Mylapore"
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '1rem' }}>
                 <button type="submit" className="submit-btn" disabled={profileLoading}>
                   {profileLoading ? 'Saving...' : 'Save'}
                 </button>
-                <button type="button" className="action-btn cancel" onClick={() => setShowProfileForm(false)}>
+                <button
+                  type="button"
+                  className="action-btn cancel"
+                  onClick={() => setShowProfileForm(false)}
+                >
                   Cancel
                 </button>
               </div>
@@ -205,25 +298,32 @@ const WorkerDashboard = () => {
           </div>
         )}
 
+        {/* Weather card */}
         {dashboardData?.weather && (
           <section className="dashboard-section">
             <div className="weather-card">
               <div className="weather-icon">
-                {dashboardData.weather.condition === 'Rain' ? 'Rain' :
-                  dashboardData.weather.condition === 'Thunderstorm' ? 'Storm' :
-                    dashboardData.weather.condition === 'Snow' ? 'Snow' :
-                      dashboardData.weather.condition === 'Clouds' ? 'Clouds' : 'Sun'}
+                {dashboardData.weather.condition === 'Rain'        ? '🌧️' :
+                 dashboardData.weather.condition === 'Thunderstorm' ? '⛈️' :
+                 dashboardData.weather.condition === 'Snow'         ? '❄️' :
+                 dashboardData.weather.condition === 'Clouds'       ? '☁️' : '☀️'}
               </div>
               <div className="weather-details">
-                <h3>Current weather in {workerData.location}</h3>
+                <h3>Current Weather — {workerData.location}</h3>
                 <p className="weather-condition">{dashboardData.weather.condition}</p>
                 <div className="weather-stats">
-                  <span>{dashboardData.weather.temperature}C</span>
-                  <span>{dashboardData.weather.humidity}% humidity</span>
+                  <span>🌡️ {dashboardData.weather.temperature}°C</span>
+                  <span>💧 {dashboardData.weather.humidity}% humidity</span>
+                  {dashboardData.weather.aqi && (
+                    <span>💨 AQI {dashboardData.weather.aqi}</span>
+                  )}
                 </div>
-                {!!dashboardData?.activeTriggers?.length && (
+                {(dashboardData.weather.condition === 'Rain' ||
+                  dashboardData.weather.condition === 'Thunderstorm' ||
+                  dashboardData.weather.temperature >= 42 ||
+                  (dashboardData.weather.aqi && dashboardData.weather.aqi >= 200)) && (
                   <div className="weather-alert">
-                    {dashboardData.activeTriggers.length} disruption trigger(s) currently active for your coverage window
+                    ⚠️ Adverse conditions detected — you may be eligible for an automatic payout
                   </div>
                 )}
               </div>
@@ -231,6 +331,7 @@ const WorkerDashboard = () => {
           </section>
         )}
 
+        {/* Worker Card */}
         <section className="dashboard-section">
           <WorkerCard
             name={workerData.name}
@@ -241,164 +342,79 @@ const WorkerDashboard = () => {
             status={workerData.status}
           />
           {!showProfileForm && (
-            <button className="link-btn top-space" onClick={() => setShowProfileForm(true)}>
-              Edit work location / platform
+            <button
+              className="link-btn"
+              style={{ marginTop: '0.5rem', fontSize: '13px' }}
+              onClick={() => setShowProfileForm(true)}
+            >
+              ✏️ Edit work location / platform
             </button>
           )}
         </section>
 
+        {/* Insurance info */}
         <section className="dashboard-section">
           <div className="info-card">
-            <h3>Dynamic Premium and Protection</h3>
-            {!dashboardData?.policy && (
-              <p className="muted-copy">
-                You are registered and protected routing is working. Create your first policy to unlock dynamic premium pricing and automated claims.
-              </p>
-            )}
+            <h3>Insurance Information</h3>
             <div className="info-grid">
               <div className="info-item">
                 <span className="label">Weekly Premium:</span>
-                <span className="value">Rs{workerData.weeklyPremium}</span>
+                <span className="value">₹{workerData.weeklyPremium}</span>
               </div>
               <div className="info-item">
                 <span className="label">Coverage Limit:</span>
-                <span className="value">Rs{workerData.coverageLimit}</span>
+                <span className="value">₹{workerData.coverageLimit}</span>
               </div>
               <div className="info-item">
-                <span className="label">Risk Level:</span>
-                <span className={`risk-badge ${String(workerData.riskLevel).toLowerCase()}`}>
-                  {workerData.riskLevel}
+                <span className="label">Policy Status:</span>
+                <span className={`status-badge ${workerData.status.toLowerCase()}`}>
+                  {workerData.status}
                 </span>
               </div>
               <div className="info-item">
-                <span className="label">Protected Hours:</span>
-                <span className="value">{dashboardData?.policy?.recommendedCoverageHours || 24} hrs/week</span>
+                <span className="label">Risk Level:</span>
+                <span className={`risk-badge ${workerData.riskLevel.toLowerCase()}`}>
+                  {workerData.riskLevel}
+                </span>
               </div>
             </div>
           </div>
         </section>
 
+        {/* Earnings */}
         <section className="dashboard-section">
-          <div className="automation-grid">
-            <div className="earnings-card">
-              <h3>Earnings Protected This Week</h3>
-              <p className="earnings-amount">Rs{workerData.earningsProtected}</p>
-            </div>
-            <div className="info-card">
-              <h3>Zero-touch claim flow</h3>
-              <div className="info-grid">
-                <div className="info-item">
-                  <span className="label">Auto-approved claims</span>
-                  <span className="value">{dashboardData?.automationSummary?.zeroTouchClaims || 0}</span>
-                </div>
-                <div className="info-item">
-                  <span className="label">Claims in soft review</span>
-                  <span className="value">{dashboardData?.automationSummary?.flaggedClaims || 0}</span>
-                </div>
-              </div>
-              <p className="muted-copy top-space">
-                Verified weather triggers pay out automatically. Edge cases like civic restrictions or mixed signals go into soft review so honest workers are not blocked unfairly.
-              </p>
-            </div>
+          <div className="earnings-card">
+            <h3>Earnings Protected This Week</h3>
+            <p className="earnings-amount">₹{workerData.earningsProtected}</p>
           </div>
         </section>
 
-        <section className="dashboard-section">
-          <div className="info-card">
-            <h3>Manual claim submission</h3>
-            <p className="muted-copy">Use this when you had a genuine disruption that did not trigger automatically.</p>
-            {claimMsg && (
-              <div className={claimMsg.includes('successfully') || claimMsg.includes('soft review') ? 'success-message top-space' : 'error-message top-space'}>
-                {claimMsg}
-              </div>
-            )}
-            <form onSubmit={handleClaimSubmit} className="auth-form top-space">
-              <div className="info-grid">
-                <div className="form-group">
-                  <label>Claim Amount (Rs)</label>
-                  <input
-                    type="number"
-                    value={claimForm.amount}
-                    onChange={(event) => setClaimForm({ ...claimForm, amount: event.target.value })}
-                    placeholder="e.g. 450"
-                    required
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Disruption Summary</label>
-                  <input
-                    type="text"
-                    value={claimForm.description}
-                    onChange={(event) => setClaimForm({ ...claimForm, description: event.target.value })}
-                    placeholder="e.g. Delivery route was shut due to waterlogging"
-                    required
-                  />
-                </div>
-              </div>
-              <div className="button-row">
-                <button type="submit" className="submit-btn" disabled={claimLoading}>
-                  {claimLoading ? 'Submitting...' : 'Submit Claim'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </section>
-
-        {!!dashboardData?.activeTriggers?.length && (
-          <section className="dashboard-section">
-            <div className="table-card">
-              <h3>Active automated triggers</h3>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Trigger</th>
-                    <th>Severity</th>
-                    <th>Projected Payout</th>
-                    <th>Payout Path</th>
-                    <th>Source</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dashboardData.activeTriggers.map((trigger) => (
-                    <tr key={trigger.type}>
-                      <td>{trigger.title}</td>
-                      <td><span className={`severity-badge ${trigger.severity}`}>{trigger.severity}</span></td>
-                      <td>Rs{trigger.payoutAmount}</td>
-                      <td>{trigger.autoApprove ? 'Zero-touch' : 'Soft review'}</td>
-                      <td>{trigger.source}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
+        {/* Claims History */}
         <section className="dashboard-section">
           <div className="table-card">
             <h3>Claims History</h3>
             {claimsHistory.length === 0 ? (
-              <p className="muted-copy">No claims yet.</p>
+              <p style={{ color: '#888', padding: '1rem' }}>No claims yet.</p>
             ) : (
               <table className="data-table">
                 <thead>
                   <tr>
                     <th>Date</th>
                     <th>Disruption</th>
-                    <th>Source</th>
+                    <th>Trigger</th>
                     <th>Amount</th>
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {claimsHistory.map((claim) => (
+                  {claimsHistory.map(claim => (
                     <tr key={claim.id}>
                       <td>{new Date(claim.submittedAt).toDateString()}</td>
                       <td>{claim.description}</td>
-                      <td>{claim.source || 'manual'}</td>
-                      <td>Rs{Number(claim.amount).toFixed(2)}</td>
+                      <td>{claim.triggerValue || '—'}</td>
+                      <td>₹{claim.amount}</td>
                       <td>
-                        <span className={`status-badge ${String(claim.status || '').toLowerCase()}`}>
+                        <span className={`status-badge ${claim.status?.toLowerCase()}`}>
                           {claim.status}
                         </span>
                       </td>
@@ -408,13 +424,23 @@ const WorkerDashboard = () => {
               </table>
             )}
           </div>
+          <PayoutChart claims={claimsHistory} weeklyPremium={dashboardData?.policy?.premium} />
         </section>
 
+        {/* FIX: Dynamic alerts built from live weather + claims data */}
         <section className="dashboard-section">
-          <h3>Recent Alerts</h3>
-          {alerts.map((alert) => (
-            <ClaimAlert key={alert.id} title={alert.title} message={alert.message} amount={alert.amount} />
-          ))}
+          <h3>Live Alerts</h3>
+          {alerts.length === 0
+            ? <p style={{ color: '#888' }}>No active alerts.</p>
+            : alerts.map(alert => (
+                <ClaimAlert
+                  key={alert.id}
+                  title={alert.title}
+                  message={alert.message}
+                  amount={alert.amount || null}
+                />
+              ))
+          }
         </section>
       </div>
     </div>

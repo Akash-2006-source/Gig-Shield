@@ -25,38 +25,6 @@ const Policy = sequelize.define('Policy', {
     type: DataTypes.DECIMAL(10, 2),
     allowNull: false
   },
-  location: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
-  occupation: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
-  riskLevel: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
-  recommendedCoverageHours: {
-    type: DataTypes.INTEGER,
-    allowNull: true
-  },
-  pricingBreakdown: {
-    type: DataTypes.JSON,
-    allowNull: true
-  },
-  eligibleTriggers: {
-    type: DataTypes.JSON,
-    allowNull: true
-  },
-  paymentStatus: {
-    type: DataTypes.ENUM('pending', 'paid'),
-    defaultValue: 'pending'
-  },
-  lastPaymentAt: {
-    type: DataTypes.DATE,
-    allowNull: true
-  },
   startDate: {
     type: DataTypes.DATE,
     defaultValue: DataTypes.NOW
@@ -65,9 +33,9 @@ const Policy = sequelize.define('Policy', {
     type: DataTypes.DATE,
     allowNull: false
   },
-  // FIX: added 'paused' as a valid status
+  // 'active' | 'paused' | 'expired' | 'cancelled'
   status: {
-    type: DataTypes.ENUM('active', 'paused', 'expired', 'cancelled'),
+    type: DataTypes.STRING,
     defaultValue: 'active'
   }
 }, {

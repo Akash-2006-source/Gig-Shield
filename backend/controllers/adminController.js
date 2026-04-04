@@ -1,12 +1,13 @@
-const User = require('../models/User')
-const Policy = require('../models/Policy')
-const Claim = require('../models/Claim')
+const User    = require('../models/User')
+const Policy  = require('../models/Policy')
+const Claim   = require('../models/Claim')
 const RiskZone = require('../models/RiskZone')
-const { Op } = require('sequelize')
+const { getFraudAssessment } = require('../services/mlService')
+const { Op, fn, col } = require('sequelize')
 
+// ── Dashboard stats with actuarial metrics ───────────────────────────────────
 exports.getDashboardStats = async (req, res) => {
   try {
-    // Platform metrics
     const workersInsured = await User.count({ where: { role: 'worker' } })
     const activePolicies = await Policy.count({ where: { status: 'active' } })
 
@@ -16,75 +17,43 @@ exports.getDashboardStats = async (req, res) => {
     const totalPayoutResult = await Claim.sum('amount', { where: { status: 'approved' } })
     const totalPayout = totalPayoutResult || 0
 
-    // Claims overview
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    const tomorrow = new Date(today)
-    tomorrow.setDate(tomorrow.getDate() + 1)
+    const flaggedCount = await Claim.count({ where: { status: 'flagged' } })
 
-    const claimsToday = await Claim.count({
-      where: {
-        submittedAt: { [Op.gte]: today, [Op.lt]: tomorrow }
-      }
+    const today    = new Date(); today.setHours(0, 0, 0, 0)
+    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1)
+    const weekAgo  = new Date(); weekAgo.setDate(weekAgo.getDate() - 7)
+
+    const claimsToday    = await Claim.count({ where: { submittedAt: { [Op.gte]: today, [Op.lt]: tomorrow } } })
+    const claimsThisWeek = await Claim.count({ where: { submittedAt: { [Op.gte]: weekAgo } } })
+
+    const lossRatio     = totalPremium > 0 ? (totalPayout / totalPremium) : 0
+    const estimatedOps  = totalPremium * 0.18
+    const combinedRatio = totalPremium > 0 ? ((totalPayout + estimatedOps) / totalPremium) : 0
+
+    const claimsByType = await Claim.findAll({
+      where:      { submittedAt: { [Op.gte]: weekAgo }, triggerType: { [Op.ne]: null } },
+      attributes: ['triggerType', [fn('COUNT', col('id')), 'count'], [fn('SUM', col('amount')), 'total']],
+      group:      ['triggerType'],
+      raw:        true
     })
-
-    const weekAgo = new Date()
-    weekAgo.setDate(weekAgo.getDate() - 7)
-    const claimsThisWeek = await Claim.count({
-      where: {
-        submittedAt: { [Op.gte]: weekAgo }
-      }
-    })
-
-    const flaggedClaims = await Claim.count({
-      where: { status: 'flagged' }
-    })
-
-    const automatedClaims = await Claim.count({
-      where: { source: 'automated' }
-    })
-
-    const softReviewQueue = await Claim.count({
-      where: {
-        status: 'flagged',
-        source: 'automated'
-      }
-    })
-
-    const recentTriggeredClaims = await Claim.findAll({
-      where: {
-        source: 'automated',
-        submittedAt: { [Op.gte]: weekAgo }
-      },
-      attributes: ['triggerType']
-    })
-
-    const triggerBreakdown = recentTriggeredClaims.reduce((acc, claim) => {
-      const key = claim.triggerType || 'manual-review'
-      acc[key] = (acc[key] || 0) + 1
-      return acc
-    }, {})
 
     res.json({
       platformMetrics: {
         workersInsured,
         activePolicies,
-        totalPremium: Math.round(totalPremium),
-        totalPayout: Math.round(totalPayout),
-        automatedClaims,
-        flaggedClaims
+        totalPremium:    Math.round(totalPremium),
+        totalPayout:     Math.round(totalPayout),
+        flaggedClaims:   flaggedCount,
+        lossRatio:       parseFloat((lossRatio * 100).toFixed(1)),
+        combinedRatio:   parseFloat((combinedRatio * 100).toFixed(1)),
+        targetLossRatio: 65,
+        fraudSavings:    0
       },
       claimsOverview: {
         claimsToday,
         claimsThisWeek,
-        totalPayout: Math.round(totalPayout),
-        softReviewQueue
-      },
-      automationMetrics: {
-        automatedClaims,
-        zeroTouchApproved: automatedClaims - softReviewQueue,
-        softReviewQueue,
-        triggerBreakdown
+        totalPayout:  Math.round(totalPayout),
+        claimsByType
       }
     })
   } catch (error) {
@@ -92,6 +61,7 @@ exports.getDashboardStats = async (req, res) => {
   }
 }
 
+// ── Risk zones ────────────────────────────────────────────────────────────────
 exports.getRiskZones = async (req, res) => {
   try {
     const riskZones = await RiskZone.findAll()
@@ -104,81 +74,83 @@ exports.getRiskZones = async (req, res) => {
 exports.updateRiskZone = async (req, res) => {
   try {
     const { location, riskLevel, weatherConditions } = req.body
-
-    const [riskZone, created] = await RiskZone.upsert({
-      location,
-      riskLevel,
-      weatherConditions,
-      updatedAt: new Date()
-    }, {
-      returning: true
-    })
-
+    const [riskZone] = await RiskZone.upsert({ location, riskLevel, weatherConditions }, { returning: true })
     res.json(riskZone)
   } catch (error) {
     res.status(500).json({ message: error.message })
   }
 }
 
+// ── Fraud alerts — uses mlService (same as claimController) for consistency ──
 exports.getFraudAlerts = async (req, res) => {
   try {
-    // Simple fraud detection logic - claims with high amounts or frequent claims
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+
     const recentClaims = await Claim.findAll({
-      where: {
-        submittedAt: { [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
-      },
+      where:   { submittedAt: { [Op.gte]: weekAgo } },
       include: [{ model: User, as: 'user', attributes: ['name', 'email'] }]
+    })
+
+    // Group by user
+    const byUser = {}
+    recentClaims.forEach(c => {
+      if (!byUser[c.userId]) byUser[c.userId] = []
+      byUser[c.userId].push(c)
     })
 
     const fraudAlerts = []
 
-    // Group claims by user
-    const userClaims = {}
-    recentClaims.forEach(claim => {
-      const userId = claim.userId
-      if (!userClaims[userId]) {
-        userClaims[userId] = []
-      }
-      userClaims[userId].push(claim)
-    })
+    for (const [userId, claims] of Object.entries(byUser)) {
+      const latestClaim = claims[0]
+      const policy = await Policy.findOne({ where: { userId, status: 'active' } })
+      if (!policy) continue
 
-    // Check for suspicious patterns
-    Object.keys(userClaims).forEach(userId => {
-      const claims = userClaims[userId]
-      if (claims.length > 3) {
-        fraudAlerts.push({
-          id: `freq-${userId}`,
-          type: 'High claim frequency',
-          severity: 'high',
-          user: claims[0].user.name,
-          details: `${claims.length} claims in the last week`
-        })
-      }
-
-      const totalAmount = claims.reduce((sum, claim) => sum + parseFloat(claim.amount), 0)
-      if (totalAmount > 1000) {
-        fraudAlerts.push({
-          id: `amount-${userId}`,
-          type: 'Large claim amounts',
-          severity: 'medium',
-          user: claims[0].user.name,
-          details: `Total claims: ₹${totalAmount}`
-        })
-      }
-    })
-
-    const flaggedAutomations = recentClaims.filter((claim) => claim.status === 'flagged' && claim.source === 'automated')
-    if (flaggedAutomations.length > 0) {
-      fraudAlerts.push({
-        id: 'auto-review-queue',
-        type: 'Automated claims awaiting review',
-        severity: flaggedAutomations.length > 3 ? 'high' : 'medium',
-        user: 'System',
-        details: `${flaggedAutomations.length} automated claims are in soft review`
+      // Use same getFraudAssessment as claimController for consistent scoring
+      const fraudResult = await getFraudAssessment({
+        amount:           parseFloat(latestClaim.amount),
+        policyCoverage:   parseFloat(policy.coverage),
+        claimCount30Days: claims.length
       })
+
+      if (fraudResult.riskScore > 0) {
+        fraudAlerts.push({
+          id:         `fraud-${userId}-${Date.now()}`,
+          userId,
+          userName:   latestClaim.user?.name,
+          claimCount: claims.length,
+          riskScore:  fraudResult.riskScore,
+          severity:   fraudResult.riskScore > 50 ? 'high' : fraudResult.riskScore > 20 ? 'medium' : 'low',
+          type:       fraudResult.isFraudulent ? 'Suspicious pattern detected' : 'Elevated risk score',
+          reasons:    fraudResult.reasons,
+          details:    `${claims.length} claims in last 7 days`
+        })
+      }
     }
 
+    fraudAlerts.sort((a, b) => b.riskScore - a.riskScore)
     res.json(fraudAlerts)
+  } catch (error) {
+    res.status(500).json({ message: error.message })
+  }
+}
+
+// ── All workers with policies (paginated) ─────────────────────────────────────
+exports.getAllWorkers = async (req, res) => {
+  try {
+    const page   = Math.max(1, parseInt(req.query.page)  || 1)
+    const limit  = Math.min(100, parseInt(req.query.limit) || 20)
+    const offset = (page - 1) * limit
+
+    const { count, rows } = await User.findAndCountAll({
+      where:      { role: 'worker' },
+      attributes: { exclude: ['password', 'resetToken', 'resetTokenExpiry'] },
+      include:    [{ model: Policy, as: 'policies', where: { status: 'active' }, required: false }],
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    })
+
+    res.json({ workers: rows, total: count, page, totalPages: Math.ceil(count / limit) })
   } catch (error) {
     res.status(500).json({ message: error.message })
   }

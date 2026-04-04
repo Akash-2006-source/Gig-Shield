@@ -1,79 +1,118 @@
-import hashlib
-import os
+"""
+risk_prediction.py
+------------------
+Predicts a risk score (0.0 – 1.0) for a given location + weather snapshot.
+Uses a trained sklearn model when available. Falls back to a rule-based
+heuristic if the model files are missing — so the service never crashes.
+"""
 
-import joblib
+import os
 import pandas as pd
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), 'models')
 
+# ── Known high-risk cities in India (used by fallback heuristic) ──────────────
+CITY_BASE_RISK = {
+    'chennai':    0.75,
+    'mumbai':     0.72,
+    'delhi':      0.65,
+    'kolkata':    0.68,
+    'hyderabad':  0.55,
+    'bengaluru':  0.50,
+    'bangalore':  0.50,
+    'pune':       0.45,
+    'ahmedabad':  0.52,
+    'jaipur':     0.48,
+}
 
-def _safe_load(filename):
-    path = os.path.join(MODEL_DIR, filename)
-    if not os.path.exists(path):
-        return None
+def _rule_based_risk(location: str, rainfall: float, temperature: float) -> float:
+    """
+    Fallback heuristic used when ML model files are not present.
+    Produces a risk score from 0.0 (low) to 1.0 (extreme).
+    """
+    city_key = location.lower().split(',')[0].strip()
+    base = CITY_BASE_RISK.get(city_key, 0.50)
 
+    # Rainfall contribution (50mm = moderate risk, 100mm = high)
+    rain_factor = min(rainfall / 100.0, 1.0) * 0.3
+
+    # Heat contribution (42°C threshold = high risk)
+    heat_factor = max(0, (temperature - 35) / 15.0) * 0.2
+
+    score = base + rain_factor + heat_factor
+    return round(min(score, 1.0), 3)
+
+
+def _load_model_artifacts():
+    """Load sklearn model and encoder if available. Returns (model, encoder) or (None, None)."""
+    import joblib
+    model_path   = os.path.join(MODEL_DIR, 'risk_model.pkl')
+    encoder_path = os.path.join(MODEL_DIR, 'location_encoder.pkl')
+
+    if not os.path.exists(model_path):
+        return None, None
+
+    model = joblib.load(model_path)
+
+    # FIX: load encoder only if file exists — was crashing when missing
+    encoder = None
+    if os.path.exists(encoder_path):
+        encoder = joblib.load(encoder_path)
+
+    return model, encoder
+
+
+def predict_risk(location: str, rainfall: float, temperature: float) -> float:
+    """
+    Predict risk score for a location + weather snapshot.
+    Uses ML model when available, falls back to rule-based heuristic.
+
+    Args:
+        location:    City name (e.g. "Chennai", "Mumbai,IN")
+        rainfall:    Rainfall in mm (3-hour accumulation)
+        temperature: Temperature in °C
+
+    Returns:
+        float: Risk score 0.0 – 1.0
+    """
     try:
-        return joblib.load(path)
-    except Exception:
-        return None
+        model, encoder = _load_model_artifacts()
 
+        if model is None:
+            # FIX: graceful fallback — no crash, just use heuristic
+            print(f'[risk_prediction] Model not found, using rule-based fallback for "{location}"')
+            return _rule_based_risk(location, rainfall, temperature)
 
-def _clamp(value, minimum=0.05, maximum=0.98):
-    return max(minimum, min(maximum, float(value)))
-
-
-def _encode_location(location):
-    normalized = str(location or '').strip().lower()
-    if not normalized:
-        return 0
-
-    digest = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
-    return int(digest[:6], 16) % 1000
-
-
-def _heuristic_risk(location, rainfall, temperature):
-    normalized = str(location or '').strip().lower()
-    rainfall = float(rainfall)
-    temperature = float(temperature)
-
-    metro_boost = 0.08 if any(city in normalized for city in ['mumbai', 'delhi', 'bengaluru', 'kolkata', 'chennai']) else 0.03
-    weather_boost = min(rainfall / 30, 0.45) + max(temperature - 34, 0) / 35
-    return _clamp(0.14 + metro_boost + weather_boost)
-
-
-def load_artifacts():
-    model = _safe_load('risk_model.pkl')
-    location_encoder = _safe_load('location_encoder.pkl')
-    return model, location_encoder
-
-
-def predict_risk(location, rainfall, temperature):
-    model, location_enc = load_artifacts()
-
-    if model is None:
-        return _heuristic_risk(location, rainfall, temperature)
-
-    if location_enc is not None and hasattr(location_enc, 'classes_'):
-        if location not in location_enc.classes_:
-            location_encoded = -1
+        # Encode location
+        if encoder is not None and location in encoder.classes_:
+            location_encoded = int(encoder.transform([location])[0])
         else:
-            location_encoded = int(location_enc.transform([location])[0])
-    else:
-        location_encoded = _encode_location(location)
+            location_encoded = -1   # unknown city → neutral encoding
 
-    input_data = pd.DataFrame({
-        'location_encoded': [location_encoded],
-        'rainfall': [float(rainfall)],
-        'temperature': [float(temperature)]
-    })
+        input_df = pd.DataFrame({
+            'location_encoded': [location_encoded],
+            'rainfall':         [float(rainfall)],
+            'temperature':      [float(temperature)]
+        })
 
-    try:
-        risk_score = model.predict(input_data)[0]
-        return _clamp(risk_score)
-    except Exception:
-        return _heuristic_risk(location, rainfall, temperature)
+        score = model.predict(input_df)[0]
+        return round(float(score), 3)
+
+    except Exception as e:
+        print(f'[risk_prediction] Prediction error for "{location}": {e}. Using fallback.')
+        return _rule_based_risk(location, rainfall, temperature)
 
 
 if __name__ == '__main__':
-    risk = predict_risk('New York', 5.2, 15.3)
-    print(f'Risk score: {risk}')
+    # Quick smoke test
+    test_cases = [
+        ('Chennai', 72.0, 34.0),
+        ('Mumbai', 85.0, 29.0),
+        ('Delhi', 5.0, 44.0),
+        ('Bengaluru', 20.0, 28.0),
+        ('UnknownCity', 0.0, 25.0),
+    ]
+    print('Risk score tests:')
+    for city, rain, temp in test_cases:
+        score = predict_risk(city, rain, temp)
+        print(f'  {city:15s} rain={rain:5.1f}mm  temp={temp:4.1f}°C  →  score={score:.3f}')

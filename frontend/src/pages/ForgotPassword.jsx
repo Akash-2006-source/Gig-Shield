@@ -4,28 +4,23 @@ import api from '../services/api'
 import '../styles/dashboard.css'
 
 const ForgotPassword = () => {
-  const [email, setEmail] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [email,     setEmail]     = useState('')
+  const [loading,   setLoading]   = useState(false)
+  const [error,     setError]     = useState('')
   const [submitted, setSubmitted] = useState(false)
-  const [message, setMessage] = useState('')
 
-  const handleSubmit = async (event) => {
-    event.preventDefault()
+  const handleSubmit = async (e) => {
+    e.preventDefault()
     setError('')
-
-    if (!email) {
-      setError('Please enter your email address')
-      return
-    }
+    if (!email) { setError('Please enter your email address'); return }
 
     try {
       setLoading(true)
-      const response = await api.post('/auth/forgot-password', { email })
-      setMessage(response.data.message || 'If the account exists, reset instructions are ready.')
+      await api.post('/auth/forgot-password', { email })
       setSubmitted(true)
     } catch (err) {
-      setError(err.response?.data?.message || 'Something went wrong. Please try again.')
+      // Always show the same message — prevent email enumeration on the frontend too
+      setSubmitted(true)
     } finally {
       setLoading(false)
     }
@@ -35,10 +30,12 @@ const ForgotPassword = () => {
     <div className="auth-container">
       <div className="auth-card">
         <h2>Forgot Password</h2>
-        <p className="auth-subtitle">Enter your email and we will prepare password reset instructions.</p>
 
         {!submitted ? (
           <>
+            <p className="auth-subtitle">
+              Enter your email and we'll send you a reset link.
+            </p>
             {error && <div className="error-message">{error}</div>}
             <form onSubmit={handleSubmit} className="auth-form">
               <div className="form-group">
@@ -46,25 +43,35 @@ const ForgotPassword = () => {
                 <input
                   type="email"
                   value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  onChange={(e) => { setEmail(e.target.value); setError('') }}
                   placeholder="Enter your email"
                   required
                 />
               </div>
               <button type="submit" className="submit-btn" disabled={loading}>
-                {loading ? 'Preparing...' : 'Start Reset'}
+                {loading ? 'Sending...' : 'Send Reset Link'}
               </button>
             </form>
           </>
         ) : (
-          <div className="reset-token-box">
-            <div className="success-message">{message}</div>
-            <p className="token-note">
-              In demo mode, a reset token may still be exposed by backend configuration. In production it should be delivered securely out of band.
+          <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+            <div style={{ fontSize: '48px', marginBottom: '1rem' }}>📧</div>
+            <div className="success-message" style={{ marginBottom: '1rem' }}>
+              Check your email for a reset link.
+            </div>
+            <p style={{ fontSize: '13px', color: 'var(--color-text-secondary)', marginBottom: '1.5rem' }}>
+              If an account exists for <strong>{email}</strong>, a reset link has been sent.
+              It expires in 1 hour.
             </p>
-            <Link to="/reset-password">
-              <button className="submit-btn top-space">Go to Reset Password</button>
-            </Link>
+            <p style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>
+              Didn't get it? Check your spam folder, or{' '}
+              <button
+                style={{ background: 'none', border: 'none', color: 'var(--color-text-info)', cursor: 'pointer', fontSize: '13px', padding: 0 }}
+                onClick={() => { setSubmitted(false); setEmail('') }}
+              >
+                try again
+              </button>.
+            </p>
           </div>
         )}
 

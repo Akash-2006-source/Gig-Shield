@@ -1,6 +1,6 @@
 const { DataTypes } = require('sequelize')
 const { sequelize } = require('../config/db')
-const User = require('./User')
+const User   = require('./User')
 const Policy = require('./Policy')
 
 const Claim = sequelize.define('Claim', {
@@ -12,18 +12,12 @@ const Claim = sequelize.define('Claim', {
   userId: {
     type: DataTypes.INTEGER,
     allowNull: false,
-    references: {
-      model: User,
-      key: 'id'
-    }
+    references: { model: User, key: 'id' }
   },
   policyId: {
     type: DataTypes.INTEGER,
     allowNull: false,
-    references: {
-      model: Policy,
-      key: 'id'
-    }
+    references: { model: Policy, key: 'id' }
   },
   amount: {
     type: DataTypes.DECIMAL(10, 2),
@@ -33,15 +27,16 @@ const Claim = sequelize.define('Claim', {
     type: DataTypes.TEXT,
     allowNull: false
   },
+  // 'pending' | 'approved' | 'rejected' | 'flagged'
   status: {
-    type: DataTypes.ENUM('pending', 'approved', 'rejected', 'flagged'),
+    type: DataTypes.STRING,
     defaultValue: 'pending'
   },
-  source: {
-    type: DataTypes.ENUM('manual', 'automated'),
-    defaultValue: 'manual'
-  },
   triggerType: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  triggerValue: {
     type: DataTypes.STRING,
     allowNull: true
   },
@@ -63,10 +58,9 @@ const Claim = sequelize.define('Claim', {
   updatedAt: 'updatedAt'
 })
 
-// Define associations
-Claim.belongsTo(User, { foreignKey: 'userId', as: 'user' })
+Claim.belongsTo(User,   { foreignKey: 'userId',   as: 'user' })
 Claim.belongsTo(Policy, { foreignKey: 'policyId', as: 'policy' })
-User.hasMany(Claim, { foreignKey: 'userId', as: 'claims' })
-Policy.hasMany(Claim, { foreignKey: 'policyId', as: 'claims' })
+User.hasMany(Claim,     { foreignKey: 'userId',   as: 'claims' })
+Policy.hasMany(Claim,   { foreignKey: 'policyId', as: 'claims' })
 
 module.exports = Claim
