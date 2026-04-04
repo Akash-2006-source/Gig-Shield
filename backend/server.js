@@ -1,6 +1,7 @@
-const express  = require('express')
-const cors     = require('cors')
-const dotenv   = require('dotenv')
+const express = require('express')
+const cors = require('cors')
+const dotenv = require('dotenv')
+const path = require('path')
 const { connectDB } = require('./config/db')
 const { processAutomaticClaims } = require('./services/triggerService')
 const { renewExpiringPolicies }  = require('./services/policyRenewalService')
@@ -51,6 +52,15 @@ app.use('/api/payments', require('./routes/paymentRoutes'))
 app.use('/api/admin',    require('./routes/adminRoutes'))
 app.use('/api/user',     require('./routes/userRoutes'))
 
+// Serve frontend in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../frontend/dist')))
+  // SPA fallback — exclude /api routes
+  app.get(/^(?!\/api).*/, (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'))
+  })
+}
+
 // Global error handler
 app.use((err, req, res, next) => {
   const status  = err.statusCode || 500
@@ -60,6 +70,7 @@ app.use((err, req, res, next) => {
 })
 
 const PORT = process.env.PORT || 5001
+
 app.listen(PORT, () => {
   console.log(`GigShield backend running on port ${PORT}`)
 })
