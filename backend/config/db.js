@@ -8,16 +8,17 @@ const sequelize = new Sequelize({
 
 const connectDB = async () => {
   try {
-    // Test connection
     await sequelize.authenticate()
-    console.log('SQLite Connected successfully')
+    console.log('SQLite connected')
 
-    // Sync all models (create tables)
-    await sequelize.sync({ alter: true })
-    console.log('Database synchronized')
-
+    // sync({ force: false }) — creates tables if they don't exist, leaves existing ones alone.
+    // We deliberately avoid alter:true because Sequelize+SQLite's alter implementation
+    // breaks on ENUM columns and causes silent insert failures.
+    // To apply schema changes, delete database.sqlite and restart.
+    await sequelize.sync({ force: false })
+    console.log('Database synchronised')
   } catch (error) {
-    console.error('Unable to connect to the database:', error)
+    console.error('Database connection failed:', error)
     process.exit(1)
   }
 }

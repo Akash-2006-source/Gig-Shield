@@ -33,9 +33,9 @@ const Policy = sequelize.define('Policy', {
     type: DataTypes.DATE,
     allowNull: false
   },
-  // FIX: added 'paused' as a valid status
+  // 'active' | 'paused' | 'expired' | 'cancelled'
   status: {
-    type: DataTypes.ENUM('active', 'paused', 'expired', 'cancelled'),
+    type: DataTypes.STRING,
     defaultValue: 'active'
   }
 }, {

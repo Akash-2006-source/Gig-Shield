@@ -1,46 +1,75 @@
-const crypto = require('crypto')
-const bcrypt = require('bcryptjs')
-const User = require('../models/User')
+const crypto  = require('crypto')
+const bcrypt  = require('bcryptjs')
+const User    = require('../models/User')
+
+// ── Email helper (Nodemailer + env-configured SMTP) ───────────────────────────
+// Set SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / EMAIL_FROM in .env
+// If not configured, falls back to logging the link (safe for local dev)
+const sendResetEmail = async (to, resetLink) => {
+  const host = process.env.SMTP_HOST
+  if (!host) {
+    console.log(`[passwordReset] EMAIL NOT CONFIGURED — reset link for ${to}:`)
+    console.log(`[passwordReset] ${resetLink}`)
+    return
+  }
+
+  const nodemailer = require('nodemailer')
+  const transporter = nodemailer.createTransport({
+    host:   process.env.SMTP_HOST,
+    port:   parseInt(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_PORT === '465',
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS
+    }
+  })
+
+  await transporter.sendMail({
+    from:    process.env.EMAIL_FROM || '"GigShield" <noreply@gigshield.in>',
+    to,
+    subject: 'Reset your GigShield password',
+    html: `
+      <p>You requested a password reset for your GigShield account.</p>
+      <p><a href="${resetLink}" style="background:#667eea;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Reset Password</a></p>
+      <p>This link expires in 1 hour. If you didn't request this, ignore this email.</p>
+    `
+  })
+}
 
 // POST /api/auth/forgot-password
-// User submits their email → we generate a reset token and return it
 exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body
-
     if (!email) {
       return res.status(400).json({ message: 'Email is required' })
     }
 
-    const user = await User.findOne({ where: { email } })
+    const user = await User.findOne({ where: { email: email.toLowerCase() } })
 
-    // Always return success even if email not found — prevents email enumeration
+    // Always return success — prevents email enumeration
     if (!user) {
-      return res.json({ message: 'If that email exists, a reset token has been generated.' })
+      return res.json({ message: 'If that email exists, a reset link has been sent.' })
     }
 
-    // Generate a secure random token
-    const resetToken = crypto.randomBytes(32).toString('hex')
-
-    // Token expires in 1 hour
-    const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000)
+    const resetToken       = crypto.randomBytes(32).toString('hex')
+    const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000) // 1 hour
 
     await user.update({ resetToken, resetTokenExpiry })
 
-    // In production you would email this token as a link
-    // For now we return it directly so you can test
-    res.json({
-      message: 'Reset token generated successfully.',
-      resetToken, // remove this line when you add real email sending
-      expiresAt: resetTokenExpiry
-    })
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+    const resetLink   = `${frontendUrl}/reset-password?token=${resetToken}`
+
+    await sendResetEmail(user.email, resetLink)
+
+    // Never expose the token in the response
+    res.json({ message: 'If that email exists, a reset link has been sent.' })
   } catch (error) {
-    res.status(500).json({ message: error.message })
+    console.error('[passwordReset] forgotPassword error:', error)
+    res.status(500).json({ message: 'Failed to process reset request' })
   }
 }
 
 // POST /api/auth/reset-password
-// User submits token + new password
 exports.resetPassword = async (req, res) => {
   try {
     const { token, newPassword } = req.body
@@ -49,30 +78,31 @@ exports.resetPassword = async (req, res) => {
       return res.status(400).json({ message: 'Token and new password are required' })
     }
 
-    if (newPassword.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters' })
+    // Unified min-length — matches authController registration requirement
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters' })
+    }
+    if (newPassword.length > 128) {
+      return res.status(400).json({ message: 'Password must not exceed 128 characters' })
     }
 
-    // Find user with matching token that hasn't expired
     const user = await User.findOne({ where: { resetToken: token } })
 
     if (!user) {
       return res.status(400).json({ message: 'Invalid or expired reset token' })
     }
 
-    // Check expiry
     if (new Date() > new Date(user.resetTokenExpiry)) {
       await user.update({ resetToken: null, resetTokenExpiry: null })
       return res.status(400).json({ message: 'Reset token has expired. Please request a new one.' })
     }
 
-    // Hash new password and clear token
-    const salt = await bcrypt.genSalt(10)
+    const salt           = await bcrypt.genSalt(10)
     const hashedPassword = await bcrypt.hash(newPassword, salt)
 
     await user.update({
-      password: hashedPassword,
-      resetToken: null,
+      password:         hashedPassword,
+      resetToken:       null,
       resetTokenExpiry: null
     })
 

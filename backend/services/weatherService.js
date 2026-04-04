@@ -5,10 +5,13 @@ const axios = require('axios')
 const cache = new Map()
 const CACHE_TTL = 5 * 60 * 1000 // 5 minutes
 
+const normaliseLocation = (loc) => (loc || '').toLowerCase().split(',')[0].trim()
+
 const getWeatherData = async (location) => {
+  const key = normaliseLocation(location)
   try {
     // Return cached result if still fresh
-    const cached = cache.get(location)
+    const cached = cache.get(key)
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
       return cached.data
     }
@@ -24,7 +27,7 @@ const getWeatherData = async (location) => {
     )
 
     // Store in cache
-    cache.set(location, {
+    cache.set(key, {
       data: response.data,
       timestamp: Date.now()
     })

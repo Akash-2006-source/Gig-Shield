@@ -1,8 +1,10 @@
-const Policy = require('../models/Policy')
-const Claim = require('../models/Claim')
+const Policy   = require('../models/Policy')
+const Claim    = require('../models/Claim')
 const RiskZone = require('../models/RiskZone')
-const User = require('../models/User')
+const User     = require('../models/User')
 const { getWeatherData } = require('../services/weatherService')
+const { getAQIData }     = require('../services/aqiService')
+const { calculatePayout, PLAN_COVERAGE } = require('../utils/premiumCalculator')
 
 exports.getDashboardData = async (req, res) => {
   try {
@@ -21,35 +23,53 @@ exports.getDashboardData = async (req, res) => {
     })
 
     const weatherData = await getWeatherData(req.user.location)
-    const earningsProtected = policy ? Math.min(policy.coverage * 0.5, 300) : 0
+    const aqiValue    = await getAQIData(req.user.location)
+
+    // FIX: earnings protected = payout worker would get if full day lost today
+    const avgDailyEarnings = parseFloat(req.user.avgDailyEarnings) || 700
+    const workHoursPerDay  = parseFloat(req.user.workHoursPerDay)  || 6
+    const coverageCap      = policy ? parseFloat(policy.coverage) : PLAN_COVERAGE.Standard
+
+    const earningsProtected = policy
+      ? calculatePayout({ avgDailyEarnings, workHoursPerDay, hoursLost: workHoursPerDay, coverageCap })
+      : 0
 
     res.json({
       user: {
-        name: req.user.name,
-        email: req.user.email,
-        occupation: req.user.occupation,
-        location: req.user.location
+        name:             req.user.name,
+        email:            req.user.email,
+        occupation:       req.user.occupation,
+        platform:         req.user.platform,
+        platformId:       req.user.platformId,
+        location:         req.user.location,
+        deliveryZone:     req.user.deliveryZone,
+        avgDailyEarnings: req.user.avgDailyEarnings,
+        workHoursPerDay:  req.user.workHoursPerDay
       },
       policy: policy ? {
-        id: policy.id,
-        type: policy.type,
-        premium: policy.premium,
+        id:       policy.id,
+        type:     policy.type,
+        premium:  policy.premium,
         coverage: policy.coverage,
-        status: policy.status
+        status:   policy.status,
+        endDate:  policy.endDate
       } : null,
       claims: claims.map(claim => ({
-        id: claim.id,
-        date: claim.submittedAt,
-        disruption: claim.description,
-        amount: claim.amount,
-        status: claim.status
+        id:           claim.id,
+        submittedAt:  claim.submittedAt,
+        description:  claim.description,
+        triggerType:  claim.triggerType,
+        triggerValue: claim.triggerValue,
+        amount:       claim.amount,
+        status:       claim.status
       })),
-      riskLevel: riskZone ? riskZone.riskLevel : 'medium',
+      riskLevel:        riskZone ? riskZone.riskLevel : 'medium',
       earningsProtected,
       weather: weatherData ? {
-        condition: weatherData.weather[0].main,
+        condition:   weatherData.weather[0].main,
         temperature: Math.round(weatherData.main.temp),
-        humidity: weatherData.main.humidity
+        humidity:    weatherData.main.humidity,
+        aqi:         aqiValue   // FIX: include AQI in weather response
       } : null
     })
   } catch (error) {
@@ -57,29 +77,41 @@ exports.getDashboardData = async (req, res) => {
   }
 }
 
-// UPDATE profile — location and occupation
+// UPDATE profile — FIX: now accepts avgDailyEarnings + deliveryZone
 exports.updateProfile = async (req, res) => {
   try {
-    const { location, occupation } = req.body
+    const { location, occupation, platform, avgDailyEarnings, deliveryZone, platformId } = req.body
 
-    if (!location && !occupation) {
-      return res.status(400).json({ message: 'Provide at least location or occupation to update' })
+    const VALID_FIELDS = ['location', 'occupation', 'platform', 'avgDailyEarnings', 'deliveryZone', 'platformId']
+    const hasAtLeastOne = VALID_FIELDS.some(f => req.body[f] !== undefined)
+    if (!hasAtLeastOne) {
+      return res.status(400).json({ message: 'Provide at least one field to update' })
     }
 
     const updateData = {}
-    if (location)   updateData.location   = location
-    if (occupation) updateData.occupation = occupation
+    if (location)     updateData.location     = location
+    if (occupation)   updateData.occupation   = occupation
+    if (platform)     updateData.platform     = platform
+    if (platformId)   updateData.platformId   = platformId
+    if (deliveryZone) updateData.deliveryZone = deliveryZone
+    if (avgDailyEarnings !== undefined) {
+      const val = parseFloat(avgDailyEarnings)
+      if (isNaN(val) || val <= 0) {
+        return res.status(400).json({ message: 'avgDailyEarnings must be a positive number' })
+      }
+      if (val > 5000) {
+        return res.status(400).json({ message: 'avgDailyEarnings cannot exceed ₹5,000 per day' })
+      }
+      updateData.avgDailyEarnings = val
+    }
 
     await User.update(updateData, { where: { id: req.user.id } })
 
     const updatedUser = await User.findByPk(req.user.id, {
-      attributes: { exclude: ['password'] }
+      attributes: { exclude: ['password', 'resetToken', 'resetTokenExpiry'] }
     })
 
-    res.json({
-      message: 'Profile updated successfully',
-      user: updatedUser
-    })
+    res.json({ message: 'Profile updated successfully', user: updatedUser })
   } catch (error) {
     res.status(500).json({ message: error.message })
   }

@@ -3,20 +3,20 @@ import { Link, useNavigate } from 'react-router-dom'
 import { registerUser } from '../services/authService'
 import '../styles/dashboard.css'
 
+const PLATFORMS = ['Zomato', 'Swiggy', 'Zepto', 'Blinkit', 'Amazon', 'Flipkart', 'Other']
+
 const Register = () => {
   const navigate = useNavigate()
   const [formData, setFormData] = useState({
-    fullName: '',
-    platform: '',
-    workCity: '',
+    fullName:           '',
+    platform:           '',
+    workCity:           '',
     averageDailyIncome: '',
-    email: '',
-    password: ''
+    email:              '',
+    password:           ''
   })
-  const [error, setError] = useState('')
+  const [error,   setError]   = useState('')
   const [loading, setLoading] = useState(false)
-
-  const platforms = ['Zomato', 'Swiggy', 'Zepto', 'Amazon', 'Flipkart']
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value })
@@ -32,23 +32,31 @@ const Register = () => {
       return
     }
 
-    if (formData.password.length < 6) {
-      setError('Password must be at least 6 characters')
+    if (formData.password.length < 8) {
+      setError('Password must be at least 8 characters')
+      return
+    }
+
+    const income = parseFloat(formData.averageDailyIncome)
+    if (isNaN(income) || income <= 0 || income > 5000) {
+      setError('Average daily income must be between ₹1 and ₹5,000')
       return
     }
 
     try {
       setLoading(true)
-      // FIX: actually call the real API
-      await registerUser({
-        name: formData.fullName,
-        email: formData.email,
-        password: formData.password,
-        occupation: formData.platform,
-        location: formData.workCity
+      const userData = await registerUser({
+        name:             formData.fullName,
+        email:            formData.email,
+        password:         formData.password,
+        platform:         formData.platform,
+        location:         formData.workCity,
+        avgDailyEarnings: income
       })
 
-      navigate('/login')
+      // Store user in localStorage so they're immediately logged in
+      localStorage.setItem('user', JSON.stringify(userData))
+      navigate('/dashboard')
     } catch (err) {
       setError(err.response?.data?.message || 'Registration failed. Please try again.')
     } finally {
@@ -85,8 +93,8 @@ const Register = () => {
               required
             >
               <option value="">Select Platform</option>
-              {platforms.map(platform => (
-                <option key={platform} value={platform}>{platform}</option>
+              {PLATFORMS.map(p => (
+                <option key={p} value={p}>{p}</option>
               ))}
             </select>
           </div>
@@ -98,7 +106,7 @@ const Register = () => {
               name="workCity"
               value={formData.workCity}
               onChange={handleChange}
-              placeholder="Enter your work city"
+              placeholder="e.g. Chennai, Mumbai, Delhi"
               required
             />
           </div>
@@ -110,9 +118,14 @@ const Register = () => {
               name="averageDailyIncome"
               value={formData.averageDailyIncome}
               onChange={handleChange}
-              placeholder="Enter average daily income"
+              placeholder="e.g. 700"
+              min="1"
+              max="5000"
               required
             />
+            <small style={{ color: 'var(--color-text-secondary)', fontSize: '12px' }}>
+              Used to calculate your income-loss payout accurately
+            </small>
           </div>
 
           <div className="form-group">
@@ -134,7 +147,7 @@ const Register = () => {
               name="password"
               value={formData.password}
               onChange={handleChange}
-              placeholder="Create a password (min 6 characters)"
+              placeholder="Create a password (min 8 characters)"
               required
             />
           </div>

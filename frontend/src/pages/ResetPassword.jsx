@@ -1,24 +1,22 @@
-import React, { useState } from 'react'
-import { Link, useNavigate, useLocation } from 'react-router-dom'
-import axios from 'axios'
+import React, { useState, useEffect } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import api from '../services/api'
 import '../styles/dashboard.css'
 
 const ResetPassword = () => {
-  const navigate = useNavigate()
-  const location = useLocation()
-
-  // Token can come from the ForgotPassword page via router state, or typed manually
-  const [formData, setFormData] = useState({
-    token: location.state?.token || '',
-    newPassword: '',
+  const navigate      = useNavigate()
+  const [params]      = useSearchParams()
+  const [form, setForm] = useState({
+    token:           params.get('token') || '',
+    newPassword:     '',
     confirmPassword: ''
   })
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error,   setError]   = useState('')
   const [success, setSuccess] = useState(false)
 
   const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value })
+    setForm({ ...form, [e.target.name]: e.target.value })
     setError('')
   }
 
@@ -26,24 +24,24 @@ const ResetPassword = () => {
     e.preventDefault()
     setError('')
 
-    if (!formData.token) {
-      setError('Reset token is required')
+    if (!form.token) {
+      setError('Reset token is missing. Use the link from your email.')
       return
     }
-    if (formData.newPassword.length < 6) {
-      setError('Password must be at least 6 characters')
+    if (form.newPassword.length < 8) {
+      setError('Password must be at least 8 characters')
       return
     }
-    if (formData.newPassword !== formData.confirmPassword) {
+    if (form.newPassword !== form.confirmPassword) {
       setError('Passwords do not match')
       return
     }
 
     try {
       setLoading(true)
-      await axios.post('http://localhost:5001/api/auth/reset-password', {
-        token: formData.token,
-        newPassword: formData.newPassword
+      await api.post('/auth/reset-password', {
+        token:       form.token,
+        newPassword: form.newPassword
       })
       setSuccess(true)
       setTimeout(() => navigate('/login'), 3000)
@@ -58,35 +56,41 @@ const ResetPassword = () => {
     <div className="auth-container">
       <div className="auth-card">
         <h2>Reset Password</h2>
-        <p className="auth-subtitle">Enter your reset token and choose a new password.</p>
 
         {success ? (
-          <div className="success-message">
-            ✅ Password reset successful! Redirecting to login...
+          <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+            <div style={{ fontSize: '48px', marginBottom: '1rem' }}>✅</div>
+            <div className="success-message">
+              Password reset successful! Redirecting to login...
+            </div>
           </div>
         ) : (
           <>
+            <p className="auth-subtitle">Choose a new password for your account.</p>
             {error && <div className="error-message">{error}</div>}
             <form onSubmit={handleSubmit} className="auth-form">
-              <div className="form-group">
-                <label>Reset Token</label>
-                <input
-                  type="text"
-                  name="token"
-                  value={formData.token}
-                  onChange={handleChange}
-                  placeholder="Paste your reset token here"
-                  required
-                />
-              </div>
+              {/* Only show token field if it wasn't in the URL */}
+              {!params.get('token') && (
+                <div className="form-group">
+                  <label>Reset Token</label>
+                  <input
+                    type="text"
+                    name="token"
+                    value={form.token}
+                    onChange={handleChange}
+                    placeholder="Paste the token from your email"
+                    required
+                  />
+                </div>
+              )}
               <div className="form-group">
                 <label>New Password</label>
                 <input
                   type="password"
                   name="newPassword"
-                  value={formData.newPassword}
+                  value={form.newPassword}
                   onChange={handleChange}
-                  placeholder="Enter new password"
+                  placeholder="At least 8 characters"
                   required
                 />
               </div>
@@ -95,9 +99,9 @@ const ResetPassword = () => {
                 <input
                   type="password"
                   name="confirmPassword"
-                  value={formData.confirmPassword}
+                  value={form.confirmPassword}
                   onChange={handleChange}
-                  placeholder="Confirm new password"
+                  placeholder="Repeat your new password"
                   required
                 />
               </div>
@@ -109,7 +113,7 @@ const ResetPassword = () => {
         )}
 
         <p className="auth-link">
-          <Link to="/forgot-password">← Request a new token</Link>
+          <Link to="/forgot-password">← Request a new link</Link>
         </p>
       </div>
     </div>

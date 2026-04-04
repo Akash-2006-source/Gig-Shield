@@ -1,8 +1,6 @@
 const Policy = require('../models/Policy')
-const User = require('../models/User')
-const RiskZone = require('../models/RiskZone')
-const { calculatePremium } = require('../utils/premiumCalculator')
-const { getWeatherData } = require('../services/weatherService')
+const User   = require('../models/User')
+const { calculateWeeklyPremium, calculateContributionPremium, PLAN_COVERAGE } = require('../utils/premiumCalculator')
 
 exports.getPolicies = async (req, res) => {
   try {
@@ -18,15 +16,10 @@ exports.getPolicyById = async (req, res) => {
     const policy = await Policy.findByPk(req.params.id, {
       include: [{ model: User, as: 'user', attributes: ['name', 'email'] }]
     })
-
-    if (!policy) {
-      return res.status(404).json({ message: 'Policy not found' })
-    }
-
+    if (!policy) return res.status(404).json({ message: 'Policy not found' })
     if (policy.userId !== req.user.id && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Not authorized' })
     }
-
     res.json(policy)
   } catch (error) {
     res.status(500).json({ message: error.message })
@@ -35,68 +28,80 @@ exports.getPolicyById = async (req, res) => {
 
 exports.createPolicy = async (req, res) => {
   try {
-    const { type, coverage, occupation, location } = req.body
+    const { type, location } = req.body
 
-    if (!type || !coverage || !occupation || !location) {
-      return res.status(400).json({ message: 'type, coverage, occupation and location are required' })
+    if (!type || !location) {
+      return res.status(400).json({ message: 'type and location are required' })
     }
 
-    // Check if user already has an active policy
-    const existingPolicy = await Policy.findOne({
-      where: { userId: req.user.id, status: 'active' }
-    })
-    if (existingPolicy) {
+    const validTypes = ['Basic', 'Standard', 'Pro']
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({ message: `type must be one of: ${validTypes.join(', ')}` })
+    }
+
+    const city             = location.split(',')[0].trim()
+    const avgDailyEarnings = parseFloat(req.user.avgDailyEarnings) || 700
+    const premiumResult    = calculateWeeklyPremium({ city, planType: type, avgDailyEarnings })
+
+    // Preview-only mode — return price without creating a policy
+    if (req.body.previewOnly) {
+      return res.json({
+        premium:            premiumResult.grossPremium,
+        contributionPct:    premiumResult.contributionPct,
+        weeklyEarnings:     premiumResult.weeklyEarnings,
+        coverageMultiplier: premiumResult.coverageMultiplier,
+        premiumBreakdown:   premiumResult.breakdown,
+        targetLossRatio:    premiumResult.targetLossRatio,
+        coverage:           premiumResult.coverage,
+        cityRisk:           premiumResult.cityRisk
+      })
+    }
+
+    // Block duplicate active policy
+    const existing = await Policy.findOne({ where: { userId: req.user.id, status: 'active' } })
+    if (existing) {
       return res.status(400).json({ message: 'You already have an active policy' })
     }
 
-    const riskZone = await RiskZone.findOne({ where: { location } })
-    const weatherData = await getWeatherData(location)
-
-    const riskFactors = {
-      location: riskZone ? riskZone.riskLevel : 'medium',
-      weatherRisk: weatherData ? (weatherData.weather[0].main.toLowerCase() === 'rain' ? 0.8 : 0.3) : 0.5,
-      occupation: occupation.toLowerCase()
-    }
-
-    const basePremium = 50
-    const calculatedPremium = calculatePremium(basePremium, riskFactors)
-
-    const endDate = new Date()
-    endDate.setFullYear(endDate.getFullYear() + 1)
+    const startDate = new Date()
+    const endDate   = new Date()
+    endDate.setDate(endDate.getDate() + 7)
 
     const policy = await Policy.create({
-      userId: req.user.id,
+      userId:   req.user.id,
       type,
-      premium: calculatedPremium,
-      coverage,
+      premium:  premiumResult.grossPremium,
+      coverage: premiumResult.coverage,
+      startDate,
       endDate
     })
 
-    res.status(201).json(policy)
+    res.status(201).json({
+      ...policy.toJSON(),
+      contributionPct:    premiumResult.contributionPct,
+      weeklyEarnings:     premiumResult.weeklyEarnings,
+      coverageMultiplier: premiumResult.coverageMultiplier,
+      premiumBreakdown:   premiumResult.breakdown,
+      targetLossRatio:    premiumResult.targetLossRatio,
+      cityRisk:           premiumResult.cityRisk
+    })
   } catch (error) {
     res.status(500).json({ message: error.message })
   }
 }
 
-// NEW: allows the policy owner to activate, pause or cancel their own policy
 exports.updatePolicyStatus = async (req, res) => {
   try {
     const policy = await Policy.findByPk(req.params.id)
-
-    if (!policy) {
-      return res.status(404).json({ message: 'Policy not found' })
-    }
-
+    if (!policy) return res.status(404).json({ message: 'Policy not found' })
     if (policy.userId !== req.user.id) {
       return res.status(403).json({ message: 'Not authorized' })
     }
-
     const { status } = req.body
     const allowed = ['active', 'paused', 'cancelled']
     if (!allowed.includes(status)) {
       return res.status(400).json({ message: `Status must be one of: ${allowed.join(', ')}` })
     }
-
     await policy.update({ status })
     res.json(policy)
   } catch (error) {
@@ -107,23 +112,16 @@ exports.updatePolicyStatus = async (req, res) => {
 exports.updatePolicy = async (req, res) => {
   try {
     const policy = await Policy.findByPk(req.params.id)
-
-    if (!policy) {
-      return res.status(404).json({ message: 'Policy not found' })
-    }
-
+    if (!policy) return res.status(404).json({ message: 'Policy not found' })
     if (req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Not authorized' })
     }
-
     const { status, premium, coverage } = req.body
     await policy.update({ status, premium, coverage })
-
-    const updatedPolicy = await Policy.findByPk(req.params.id, {
+    const updated = await Policy.findByPk(req.params.id, {
       include: [{ model: User, as: 'user', attributes: ['name', 'email'] }]
     })
-
-    res.json(updatedPolicy)
+    res.json(updated)
   } catch (error) {
     res.status(500).json({ message: error.message })
   }
@@ -133,7 +131,7 @@ exports.getAllPolicies = async (req, res) => {
   try {
     const policies = await Policy.findAll({
       include: [{ model: User, as: 'user', attributes: ['name', 'email'] }],
-      order: [['startDate', 'DESC']]
+      order:   [['startDate', 'DESC']]
     })
     res.json(policies)
   } catch (error) {
