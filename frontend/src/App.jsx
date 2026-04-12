@@ -15,6 +15,7 @@ import ProfilePage          from './pages/ProfilePage'
 import NotFound             from './pages/NotFound'
 import ComplaintPage        from './pages/ComplaintPage'
 import './styles/dashboard.css'
+import './styles/enhanced.css'
 
 function App() {
   return (

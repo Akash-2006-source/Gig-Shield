@@ -1,7 +1,0 @@
--- Legacy note:
--- Gig-Shield no longer uses MySQL for local development.
--- The active app now uses SQLite through Sequelize at:
---   backend/database.sqlite
---
--- No manual SQL bootstrap is required.
--- Start the backend and it will create/update the local SQLite schema automatically.
