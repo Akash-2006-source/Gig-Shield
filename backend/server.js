@@ -1,6 +1,7 @@
 const express  = require('express')
 const cors     = require('cors')
 const dotenv   = require('dotenv')
+const path     = require('path')
 const { connectDB } = require('./config/db')
 const { processAutomaticClaims } = require('./services/triggerService')
 const { renewExpiringPolicies }  = require('./services/policyRenewalService')
@@ -14,9 +15,10 @@ dotenv.config({ path: '../.env' })
 const required = ['JWT_SECRET', 'FRONTEND_URL']
 required.forEach(key => {
   if (!process.env[key] || process.env[key].includes('your-')) {
+    // In monolith mode (Render), FRONTEND_URL is optional — same-origin requests bypass CORS
     if (key === 'FRONTEND_URL' && process.env.NODE_ENV === 'production') {
-      console.error(`ERROR: ${key} must be set in production — CORS will block all browser requests`)
-      process.exit(1)
+      console.warn(`WARNING: ${key} not set — assuming monolith deployment (same-origin CORS)`)
+      return
     }
     console.warn(`WARNING: Environment variable ${key} is missing or still a placeholder`)
   }
@@ -77,6 +79,15 @@ app.use('/api/admin',      require('./routes/adminRoutes'))
 app.use('/api/admin/jobs', require('./routes/admin/jobs'))
 app.use('/api/user',     require('./routes/userRoutes'))
 app.use('/api/behavior', require('./routes/behaviorRoutes'))
+
+// Serve frontend in production (Render monolith deployment)
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../frontend/dist')))
+  // SPA fallback — exclude /api routes
+  app.get(/^(?!\/api).*/, (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'))
+  })
+}
 
 // Global error handler
 app.use((err, req, res, next) => {
