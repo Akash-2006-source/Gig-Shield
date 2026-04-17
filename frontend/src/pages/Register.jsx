@@ -8,18 +8,24 @@ const PLATFORMS = ['Zomato', 'Swiggy', 'Zepto', 'Blinkit', 'Amazon', 'Flipkart',
 const Register = () => {
   const navigate = useNavigate()
   const [formData, setFormData] = useState({
-    fullName:           '',
-    platform:           '',
-    workCity:           '',
+    fullName: '',
+    platform: '',
+    workCity: '',
     averageDailyIncome: '',
-    email:              '',
-    password:           ''
+    payoutMethod: 'UPI',
+    payoutHandle: '',
+    payoutAccountName: '',
+    directPayoutConsent: true,
+    locationTrackingConsent: true,
+    email: '',
+    password: ''
   })
-  const [error,   setError]   = useState('')
+  const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value })
+    const { name, value } = e.target
+    setFormData({ ...formData, [name]: value })
     setError('')
   }
 
@@ -28,7 +34,7 @@ const Register = () => {
 
     if (!formData.fullName || !formData.platform || !formData.workCity ||
         !formData.averageDailyIncome || !formData.email || !formData.password) {
-      setError('Please fill in all fields')
+      setError('Please fill in all required fields')
       return
     }
 
@@ -39,22 +45,26 @@ const Register = () => {
 
     const income = parseFloat(formData.averageDailyIncome)
     if (isNaN(income) || income <= 0 || income > 5000) {
-      setError('Average daily income must be between ₹1 and ₹5,000')
+      setError('Average daily income must be between 1 and 5000')
       return
     }
 
     try {
       setLoading(true)
       const userData = await registerUser({
-        name:             formData.fullName,
-        email:            formData.email,
-        password:         formData.password,
-        platform:         formData.platform,
-        location:         formData.workCity,
-        avgDailyEarnings: income
+        name: formData.fullName,
+        email: formData.email,
+        password: formData.password,
+        platform: formData.platform,
+        location: formData.workCity,
+        avgDailyEarnings: income,
+        payoutMethod: formData.payoutMethod,
+        payoutHandle: formData.payoutHandle || undefined,
+        payoutAccountName: formData.payoutAccountName || undefined,
+        directPayoutConsent: formData.directPayoutConsent,
+        locationTrackingConsent: formData.locationTrackingConsent
       })
 
-      // Store user in localStorage so they're immediately logged in
       localStorage.setItem('user', JSON.stringify(userData))
       navigate('/dashboard')
     } catch (err) {
@@ -93,8 +103,8 @@ const Register = () => {
               required
             >
               <option value="">Select Platform</option>
-              {PLATFORMS.map(p => (
-                <option key={p} value={p}>{p}</option>
+              {PLATFORMS.map((platform) => (
+                <option key={platform} value={platform}>{platform}</option>
               ))}
             </select>
           </div>
@@ -112,7 +122,7 @@ const Register = () => {
           </div>
 
           <div className="form-group">
-            <label>Average Daily Income (₹)</label>
+            <label>Average Daily Income</label>
             <input
               type="number"
               name="averageDailyIncome"
@@ -126,6 +136,63 @@ const Register = () => {
             <small style={{ color: 'var(--color-text-secondary)', fontSize: '12px' }}>
               Used to calculate your income-loss payout accurately
             </small>
+          </div>
+
+          <div className="info-card" style={{ marginBottom: '1rem', background: '#f8fbff' }}>
+            <h3 style={{ marginBottom: '0.75rem' }}>Direct payment to the delivery partner</h3>
+            <p style={{ marginBottom: '0.75rem', color: 'var(--color-text-secondary)', fontSize: '14px' }}>
+              Approved payouts go directly to the delivery partner. No third-party involvement in the payout path.
+            </p>
+            <div className="form-group">
+              <label>Payout Method</label>
+              <select name="payoutMethod" value={formData.payoutMethod} onChange={handleChange}>
+                <option value="UPI">UPI</option>
+                <option value="BANK_TRANSFER">Bank transfer</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>{formData.payoutMethod === 'UPI' ? 'UPI ID' : 'Bank transfer reference'}</label>
+              <input
+                type="text"
+                name="payoutHandle"
+                value={formData.payoutHandle}
+                onChange={handleChange}
+                placeholder={formData.payoutMethod === 'UPI' ? 'name@upi' : 'Registered payout account'}
+              />
+            </div>
+            <div className="form-group">
+              <label>Account Holder Name</label>
+              <input
+                type="text"
+                name="payoutAccountName"
+                value={formData.payoutAccountName}
+                onChange={handleChange}
+                placeholder="Name on payout account"
+              />
+            </div>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={formData.directPayoutConsent}
+                onChange={(e) => setFormData({ ...formData, directPayoutConsent: e.target.checked })}
+              />
+              <span>I confirm direct payment to the delivery partner with no third-party involvement.</span>
+            </label>
+          </div>
+
+          <div className="info-card" style={{ marginBottom: '1rem', background: '#f8fbff' }}>
+            <h3 style={{ marginBottom: '0.75rem' }}>Tracking the location of the delivery partner</h3>
+            <p style={{ marginBottom: '0.75rem', color: 'var(--color-text-secondary)', fontSize: '14px' }}>
+              Consented location tracking is used to verify trigger zones, match local weather and AQI data, and reduce spoofing-based fraud.
+            </p>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={formData.locationTrackingConsent}
+                onChange={(e) => setFormData({ ...formData, locationTrackingConsent: e.target.checked })}
+              />
+              <span>I consent to location tracking for trigger verification and fair payouts.</span>
+            </label>
           </div>
 
           <div className="form-group">

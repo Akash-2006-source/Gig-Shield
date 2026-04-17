@@ -74,6 +74,32 @@ const User = sequelize.define('User', {
     allowNull: true,
     defaultValue: 6.0
   },
+  payoutMethod: {
+    type: DataTypes.ENUM('UPI', 'BANK_TRANSFER'),
+    allowNull: true
+  },
+  payoutHandle: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  payoutAccountName: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  directPayoutConsent: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false
+  },
+  locationTrackingConsent: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false
+  },
+  lastTrackedAt: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
   // Password reset fields
   resetToken: {
     type: DataTypes.STRING,
